@@ -1,0 +1,18 @@
+[Unit]
+Description=漂流瓶 · 拉取种子瓶（git pull）
+Documentation=file:///srv/bottle/seeds/README.md
+
+[Service]
+Type=oneshot
+User=bottle
+Group=bottle
+WorkingDirectory=/srv/bottle/seeds
+
+# 只用 git，不用 rsync（§13.5）：rsync 手滑删文件服务器上也就没了，git 有历史和回滚。
+# 这个 unit 只碰种子目录，绝不重启 bottle-server：重启会海啸。
+ExecStart=/usr/bin/git pull --ff-only --quiet
+TimeoutStartSec=60s
+
+# 拉不动不要紧：服务端会保留上一版种子，下一轮再试
+SuccessExitStatus=0
+Nice=10

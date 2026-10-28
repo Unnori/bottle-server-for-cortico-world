@@ -1,0 +1,4 @@
+# vitest 依赖 esbuild，esbuild 需要一个构建脚本；
+# pnpm 11 默认拦下这些脚本，这里显式放行，否则 `pnpm install` 会退 1。
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,55 @@
+[Unit]
+Description=漂流瓶 · 海（bottle server）
+Documentation=https://github.com/Unnori/bottle-server-for-cortico-world
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bottle
+Group=bottle
+WorkingDirectory=/srv/bottle/app
+
+# 正文只在内存（§5.1）。重启会海啸，所以这里刻意不设 Restart=always：
+# 崩了要人看一眼，而不是悄悄把所有还漂着的信冲掉。
+Restart=on-failure
+RestartSec=5s
+
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=8787
+Environment=BOTTLE_DATA=/srv/bottle/data/bottle.json
+Environment=BOTTLE_SEEDS_DIR=/srv/bottle/seeds
+Environment=BOTTLE_TZ=Asia/Hong_Kong
+
+# 配额参数（§6）：两条公式都是参数，池子变大后只调这里
+# Environment=BOTTLE_SEND_BASE=2
+# Environment=BOTTLE_SEND_CAP=5
+# Environment=BOTTLE_CATCH_BASE=2
+# Environment=BOTTLE_CATCH_CAP=10
+# Environment=BOTTLE_POOL_DIVISOR=5
+# Environment=BOTTLE_SEEDS_PER_USER_MAX=2
+
+# Node 装在 /usr/local/bin（官方二进制）。写绝对路径，别依赖 systemd 的 PATH：
+# 203/EXEC 就是路径不对，报错不会告诉你缺的是哪个文件。
+ExecStart=/usr/local/bin/node --experimental-strip-types /srv/bottle/app/server/main.ts
+
+# 加固：进程只需要读写自己的数据与种子目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/bottle/data
+ReadOnlyPaths=/srv/bottle/seeds
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bottle
+
+[Install]
+WantedBy=multi-user.target

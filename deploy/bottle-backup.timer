@@ -1,0 +1,13 @@
+[Unit]
+Description=漂流瓶 · 每 8 小时备份一次 bottle.json
+
+[Timer]
+# 00:05 / 08:05 / 16:05，避开整点（整点别的任务多，也避开写风暴）
+OnCalendar=*-*-* 00/8:05:00
+# 关机或休眠错过的那些，开机后补跑一次
+Persistent=true
+# 随机抖动，避免以后加了别的定时任务撞在一起
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

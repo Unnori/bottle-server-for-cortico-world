@@ -1,0 +1,10 @@
+# 依赖
+node_modules/
+
+# 运行时数据：这里面有真实用户的化名与计数，永远不要提交
+data/
+*.json.tmp
+
+# 系统垃圾
+.DS_Store
+Thumbs.db

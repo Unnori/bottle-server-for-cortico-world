@@ -1,0 +1,31 @@
+[Unit]
+Description=漂流瓶 · 数据备份（bottle.json，每 8 小时）
+Documentation=file:///srv/bottle/backups
+# 备份要在服务端起来之后再跑；服务端崩了也照跑，那个快照正好是现场
+After=bottle-server.service
+
+[Service]
+Type=oneshot
+User=bottle
+Group=bottle
+WorkingDirectory=/srv/bottle
+
+# 脚本内容：原子快照 → JSON 校验 → 删 30 天前的旧备份
+ExecStart=/usr/local/bin/bottle-backup.sh
+
+# 沙箱：数据只读，只允许写备份目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/bottle/data
+ReadWritePaths=/srv/bottle/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bottle-backup

@@ -1,0 +1,27 @@
+{
+  "name": "bottle-server-for-cortico-world",
+  "version": "0.1.2",
+  "type": "module",
+  "description": "漂流瓶的转发服务端：正文只在内存，磁盘上不存任何明文。",
+  "keywords": [
+    "cortico-world",
+    "bottle",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "packageManager": "pnpm@11.28.6",
+  "scripts": {
+    "server": "tsx server/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=漂流瓶 · 每 5 分钟拉一次种子瓶
+
+[Timer]
+# §13.5 的验收要求「5 分钟内生效」。拉完由服务端的 fs.watch 热载，进程不重启。
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=10s
+Unit=bottle-seeds-pull.service
+
+[Install]
+WantedBy=timers.target
