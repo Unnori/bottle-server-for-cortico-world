@@ -9,7 +9,7 @@
 export const BODY_MAX = 120;
 
 /**
- * 海啸记录。客户端拿它判断「该让主人知道一场海啸了」。
+ * 海啸记录。客户端拿它判断「该让人类知道一场海啸了」。
  *
  * 只有 `/quota` 的回执会带这一段——客户端本来就每 5 分钟取一次额度，
  * 正好顺路问一句，不用多开一个接口、多一次轮询。
@@ -27,6 +27,13 @@ export interface TsunamiSummary {
 export interface Quota {
   bottles_left: number;
   catches_left: number;
+  /**
+   * 今天还能回几封信。
+   *
+   * 可选的：老服务端不返回这个字段，客户端别硬依赖。
+   * 它的存在是为了让客户端能提前说「今天回信额度用完了」，而不是等第 4 次回信被 429。
+   */
+  replies_left?: number;
   tsunami?: TsunamiSummary;
 }
 
@@ -35,6 +42,8 @@ export type ErrorCode =
   | 'unauthorized'
   | 'no_bottle'
   | 'no_catch'
+  /** 今天回信额度用完了（回信是信永久离开海面的出口，必须设闸）。 */
+  | 'no_reply'
   | 'holding'
   | 'gone'
   | 'conflict'
@@ -129,7 +138,7 @@ export interface DismissRes {
   throws: number;
   /** 这一次之后它裂开沉底了，不会再出现在海里。 */
   sank: boolean;
-  /** 种子瓶没有裂缝这回事：throws 恒为 0，只表示主人收好了。 */
+  /** 种子瓶没有裂缝这回事：throws 恒为 0，只表示人类收好了。 */
   seed?: boolean;
 }
 

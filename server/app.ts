@@ -17,7 +17,7 @@ import {
 import { checkBody } from '../shared/text.ts';
 import { seaStateAt } from '../shared/tide.ts';
 import { type Db, type BotRow, type LetterRow } from './db.ts';
-import { computeQuota, resetDaily, rulesFromEnv, type QuotaRules } from './quota.ts';
+import { computeQuota, resetDaily, rulesFromEnv, DEFAULT_RULES, type QuotaRules } from './quota.ts';
 import { SEED_FROM, type SeedLetter, type SeedStore } from './seeds.ts';
 import { makeTuningReader, type Tuning, type TuningReader } from './tuning.ts';
 
@@ -176,7 +176,7 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 export function createApi(db: Db, options: ApiOptions = {}): Api {
-  const rules = options.rules ?? rulesFromEnv();
+  let rules = options.rules ?? rulesFromEnv();
   const now = options.now ?? (() => Date.now());
   const random = options.random ?? Math.random;
   const timeZone = options.timeZone ?? process.env.BOTTLE_TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
@@ -190,6 +190,26 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   const seedChannel = options.seedChannel ?? 'catch';
   const tuning = options.tuning ?? makeTuningReader(null);
   const currentTuning = (): Tuning => tuning.current();
+
+  /**
+   * 把配额参数也接上热载。
+   *
+   * 以前这五个数只能靠环境变量，改一次要 `daemon-reload` + 重启 = 一次海啸。
+   * 调一个数字的代价不该是「把海面上还漂着的信全拍碎」。现在改 `tuning.json` 就生效。
+   * 调用方（测试）显式传了 `rules` 就不覆盖。
+   */
+  function refreshRules(): void {
+    if (options.rules) return;
+    const t = currentTuning();
+    rules = {
+      sendBase: t.sendBase,
+      sendCap: t.sendCap,
+      catchBase: t.catchBase,
+      catchCap: t.catchCap,
+      poolDivisor: t.poolDivisor,
+      replyCap: t.replyCap,
+    };
+  }
   const startedAt = options.startedAt ?? now();
 
   /** 只活在内存里：重启即清，和正文同一条叙事。 */
@@ -506,6 +526,15 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
 
     const payload = asObject(req.body);
     const letterId = typeof payload?.letterId === 'string' ? payload.letterId : '';
+    // 回信是信**永久离开海面**的唯一大额出口，所以它必须有闸（§6 收支平衡）。
+    // 不设的话每人每天能消灭 10 封、只补 5 封，海会一直很薄，漂流就退化成即时通讯。
+    if (bot.repliesMade >= (rules.replyCap ?? DEFAULT_RULES.replyCap ?? 3)) {
+      return fail(
+        429,
+        'no_reply',
+        `今天的回信额度用完了（${rules.replyCap ?? DEFAULT_RULES.replyCap} 封）。明天再来。`,
+      );
+    }
     // 海边邮局不回信（§13.7）：不做一条「回了也没人看」的假状态机
     if (seeds?.get(letterId)) {
       return fail(409, 'seed_no_reply', '这一封来自海边邮局，它不会回信。');
@@ -636,6 +665,8 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   return {
     handle(req: ApiRequest): ApiResponse {
       const path = req.path.replace(/\/+$/, '') || '/';
+      // 每次请求前刷一下参数（内部有 5 秒 mtime 缓存，不会真去 stat 每个请求）
+      refreshRules();
 
       if (req.method === 'POST' && path === '/register') return handleRegister(req);
       if (req.method === 'GET' && path === '/health') return handleHealth();

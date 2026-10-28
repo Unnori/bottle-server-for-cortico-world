@@ -51,7 +51,18 @@ function rig(opts: { seedChannel?: 'mail' | 'catch'; tuning?: Partial<Tuning>; s
   const seeds = new SeedStore({ dir });
   seeds.start();
 
-  const tuning: Tuning = { seedsPerDay: 2, seedsGlobalOnce: true, seedsEnabled: true, ...opts.tuning };
+  const tuning: Tuning = {
+    seedsPerDay: 2,
+    seedsGlobalOnce: true,
+    seedsEnabled: true,
+    sendBase: 2,
+    sendCap: 5,
+    catchBase: 2,
+    catchCap: 10,
+    poolDivisor: 5,
+    replyCap: 3,
+    ...opts.tuning,
+  };
   const reader: TuningReader = { current: () => tuning };
 
   const db = Db.open(null);
@@ -214,7 +225,7 @@ describe('系统邮件：两层去重', () => {
     }
   });
 
-  it('两个用户互不重叠：4 封被两个人各领 2 封，全是不同的信', () => {
+  it('两个客户端互不重叠：4 封被两个人各领 2 封，全是不同的信', () => {
     const h = rig({ tuning: { seedsPerDay: 2, seedsGlobalOnce: true }, seedCount: 10 });
     try {
       const a = h.token('a', '1.1.1.1');

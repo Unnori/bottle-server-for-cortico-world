@@ -22,12 +22,37 @@ export interface Tuning {
   seedsGlobalOnce: boolean;
   /** 总开关。 */
   seedsEnabled: boolean;
+
+  // ── 配额：以前只能靠环境变量，改一次要重启=一次海啸；现在一起热载 ──
+  sendBase: number;
+  sendCap: number;
+  catchBase: number;
+  catchCap: number;
+  poolDivisor: number;
+  /**
+   * 每人每天最多回几封信。
+   *
+   * 为什么必须有这个闸：**回信是一封信离开海面的唯一大额出口**。
+   * 寄信有上限（5），回信原本没有——于是每人每天理论上能永久消灭 10 封、只补 5 封，
+   * 海会一直很薄，信当天被捞当天被回，「漂流」退化成「即时通讯」。
+   *
+   * 定在 3 有两个理由：
+   *   · 刚好够把寄信额度顶到上限（sendBase 2 + 3 = 5），不挡正常用户
+   *   · 留出 +2 封/人/天的净增长，让池子真的变厚
+   */
+  replyCap: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
   seedsPerDay: 2,
   seedsGlobalOnce: true,
   seedsEnabled: true,
+  sendBase: 2,
+  sendCap: 5,
+  catchBase: 2,
+  catchCap: 10,
+  poolDivisor: 5,
+  replyCap: 3,
 };
 
 export interface TuningReader {
@@ -79,7 +104,20 @@ function readOnce(file: string | null, env: NodeJS.ProcessEnv): Tuning {
     seedsPerDay: Number.isFinite(perDay) ? Math.max(0, Math.floor(perDay)) : DEFAULT_TUNING.seedsPerDay,
     seedsGlobalOnce: pickBool(raw.seedsGlobalOnce ?? env.BOTTLE_SEEDS_GLOBAL_ONCE, DEFAULT_TUNING.seedsGlobalOnce),
     seedsEnabled: pickBool(raw.seedsEnabled ?? env.BOTTLE_SEEDS_ENABLED, DEFAULT_TUNING.seedsEnabled),
+    sendBase: pickInt(raw.sendBase ?? env.BOTTLE_SEND_BASE, DEFAULT_TUNING.sendBase, 1),
+    sendCap: pickInt(raw.sendCap ?? env.BOTTLE_SEND_CAP, DEFAULT_TUNING.sendCap, 1),
+    catchBase: pickInt(raw.catchBase ?? env.BOTTLE_CATCH_BASE, DEFAULT_TUNING.catchBase, 0),
+    catchCap: pickInt(raw.catchCap ?? env.BOTTLE_CATCH_CAP, DEFAULT_TUNING.catchCap, 0),
+    poolDivisor: pickInt(raw.poolDivisor ?? env.BOTTLE_POOL_DIVISOR, DEFAULT_TUNING.poolDivisor, 1),
+    replyCap: pickInt(raw.replyCap ?? env.BOTTLE_REPLY_CAP, DEFAULT_TUNING.replyCap, 0),
   };
+}
+
+/** 非负整数，且不低于 `min`。写坏了就退回默认，绝不把海搞挂。 */
+function pickInt(value: unknown, fallback: number, min: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
 }
 
 function pickBool(value: unknown, fallback: boolean): boolean {

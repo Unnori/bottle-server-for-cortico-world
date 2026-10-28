@@ -310,6 +310,47 @@ describe('探针与海况这两条公开路线', () => {
     expect(JSON.stringify(body)).not.toContain('上线');
   });
 
+  it('回信上限：第 4 封被拒，前 3 封照常', () => {
+    const token = 'tok_reply_cap';
+    const db = Db.open(null);
+    const me = bot({ tokenHash: sha256(token), repliesMade: 3 });
+    db.bots.push(me);
+    const held = letter({
+      state: 'caught',
+      catcherHash: me.clientHash,
+      body: '在海上漂过的信',
+      replyWindowUntil: AT + 3_600_000,
+    });
+    db.letters.push(held);
+
+    const api = createApi(db, { now: () => AT, timeZone: 'Asia/Hong_Kong' });
+    const res = api.handle({
+      method: 'POST',
+      path: '/reply',
+      token,
+      ip: '1.1.1.1',
+      body: { letterId: held.id, body: '收到了。' },
+    });
+
+    // 回信是信**永久**离开海面的出口，所以必须有闸（默认 3 封）
+    expect(res.status).toBe(429);
+    expect((res.body as { error: string }).error).toBe('no_reply');
+    // 被拒之后信还在手上，不会凭空消失
+    expect(held.state).toBe('caught');
+    expect(db.replies).toHaveLength(0);
+  });
+
+  it('回信额度会出现在 /quota 里，客户端因此能提前提示', () => {
+    const token = 'tok_reply_left';
+    const db = Db.open(null);
+    const me = bot({ tokenHash: sha256(token), repliesMade: 1 });
+    db.bots.push(me);
+    const api = createApi(db, { now: () => AT, timeZone: 'Asia/Hong_Kong' });
+    const quota = api.handle({ method: 'GET', path: '/quota', token, ip: '1.1.1.1' })
+      .body as { replies_left?: number };
+    expect(quota.replies_left).toBe(2);
+  });
+
   it('记活跃：鉴权请求会写 lastSeenAt', () => {
     const db = Db.open(null);
     const api = createApi(db, { now: () => AT, timeZone: 'Asia/Hong_Kong' });
