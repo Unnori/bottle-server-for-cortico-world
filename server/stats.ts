@@ -9,7 +9,7 @@
  * 还有一条铁律：**统计只能看见，不能动手。** 所以调用方必须用 `Db.readRaw()`，
  * 绝不能用 `Db.open()` —— 后者会把还漂着的信判定成海啸并写盘。
  */
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { blindAtSea, blindEverSeen, blindResidents, bucketCount, type Ledger } from './blind.ts';
 import type { Db } from './db.ts';
@@ -42,6 +42,19 @@ export interface RealStats {
   thrownToday: number;
   caughtToday: number;
   repliesToday: number;
+  /**
+   * 今日动作：多少人 × 多少次。
+   *
+   * 全靠 bot 上那三个每日计数器（`bottlesUsed` / `catchesUsed` / `mailTaken`）算出来——
+   * 它们每天 0 点惰性清零，所以「`lastResetDate === 今天` 的 bot」身上的就是今天的数。
+   * 因此不需要任何事件日志表，也就不需要改 schema。
+   */
+  throwUsersToday: number;
+  throwActionsToday: number;
+  catchUsersToday: number;
+  catchActionsToday: number;
+  seedUsersToday: number;
+  seedActionsToday: number;
   catchCountTotal: number;
   repliesTotal: number;
   /** 回信 / 投入，0–1。**比率类，永不公开。** */
@@ -113,6 +126,8 @@ export function collectRealStats(db: Db, seeds: SeedStats | null, opts: CollectO
 
   const bots = db.bots;
   const letters = db.letters;
+  /** 计数器只属于「它被清零的那一天」：昨天动过、今天还没来的账号不算今天的人。 */
+  const todayBots = bots.filter((bot) => bot.lastResetDate === today);
   const byState = (state: string): number => letters.filter((letter) => letter.state === state).length;
 
   const sunk = letters.filter((letter) => letter.archivedReason === 'sunk').length;
@@ -154,6 +169,15 @@ export function collectRealStats(db: Db, seeds: SeedStats | null, opts: CollectO
       (letter) => letter.caughtAt !== null && dayStart(letter.caughtAt) === today,
     ).length,
     repliesToday: db.replies.filter((reply) => dayStart(reply.createdAt) === today).length,
+
+    // 今天动过的人：计数器只属于今天，别把昨天没清零的算进来
+    throwUsersToday: todayBots.filter((bot) => (bot.bottlesUsed ?? 0) > 0).length,
+    throwActionsToday: todayBots.reduce((sum, bot) => sum + Math.max(0, bot.bottlesUsed ?? 0), 0),
+    catchUsersToday: todayBots.filter((bot) => (bot.catchesUsed ?? 0) > 0).length,
+    catchActionsToday: todayBots.reduce((sum, bot) => sum + Math.max(0, bot.catchesUsed ?? 0), 0),
+    seedUsersToday: todayBots.filter((bot) => (bot.mailTaken ?? 0) > 0).length,
+    seedActionsToday: todayBots.reduce((sum, bot) => sum + Math.max(0, bot.mailTaken ?? 0), 0),
+
     catchCountTotal,
     repliesTotal,
     replyRate: letters.length ? Math.round((repliesTotal / letters.length) * 1000) / 1000 : 0,
@@ -204,11 +228,35 @@ export function applyBlinding(real: RealStats, ledger: Ledger, at: number): Publ
   };
 }
 
-/** 追加一行真数到 JSONL。写不进去只报警，不影响服务。 */
+/**
+ * 写入某一天的真数。
+ *
+ * **按日期去重**：同一天重跑快照是「更新」而不是「再追加一行」。
+ * 否则一天跑两次就会有两条，画曲线时会冒出个假的重复点。
+ */
 export function appendStatsLine(file: string, stat: RealStats): void {
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(stat)}\n`, { encoding: 'utf8', flag: 'a' });
+    let kept = '';
+    try {
+      kept = readFileSync(file, 'utf8')
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .filter((line) => {
+          try {
+            return (JSON.parse(line) as { date?: string }).date !== stat.date;
+          } catch {
+            return true; // 坏行留着，别因为一行脏数据丢掉整段历史
+          }
+        })
+        .map((line) => `${line}\n`)
+        .join('');
+    } catch {
+      // 文件还不存在：从这个日期开始记
+    }
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, `${kept}${JSON.stringify(stat)}\n`, 'utf8');
+    renameSync(tmp, file);
   } catch (error) {
     process.stderr.write(
       `stats.jsonl 写入失败：${error instanceof Error ? error.message : 'unknown'}\n`,

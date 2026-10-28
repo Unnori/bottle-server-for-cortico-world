@@ -146,6 +146,23 @@ describe('真实统计', () => {
     expect(real.tsunamiShatteredTotal).toBe(4);
   });
 
+  it('今日动作：多少人 × 多少次，全靠每日计数器，不需要事件日志', () => {
+    const db = Db.open(null);
+    db.bots.push(
+      bot({ lastResetDate: TODAY, bottlesUsed: 2, catchesUsed: 3, mailTaken: 1 }),
+      bot({ lastResetDate: TODAY, bottlesUsed: 0, catchesUsed: 1, mailTaken: 4 }),
+      // 昨天动过、今天还没来：计数器还是昨天的，绝不能算进今天
+      bot({ lastResetDate: '2026-10-28', bottlesUsed: 5, catchesUsed: 5, mailTaken: 2 }),
+    );
+    const real = collectRealStats(db, null, { timeZone: 'Asia/Hong_Kong', today: TODAY, at: AT });
+    expect(real.throwUsersToday).toBe(1);
+    expect(real.throwActionsToday).toBe(2);
+    expect(real.catchUsersToday).toBe(2);
+    expect(real.catchActionsToday).toBe(4);
+    expect(real.seedUsersToday).toBe(2);
+    expect(real.seedActionsToday).toBe(5);
+  });
+
   it('回信率是个比率，算得出来但永不公开', () => {
     const db = Db.open(null);
     db.letters.push(letter(), letter(), letter(), letter());
