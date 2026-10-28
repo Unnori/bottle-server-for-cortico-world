@@ -1,0 +1,39 @@
+[Unit]
+Description=漂流瓶 · 每日统计快照（真数 + 盲化公开数）
+Documentation=https://github.com/Unnori/bottle-server-for-cortico-world
+After=bottle-server.service
+
+[Service]
+Type=oneshot
+User=bottle
+Group=bottle
+WorkingDirectory=/srv/bottle/app
+
+Environment=NODE_ENV=production
+Environment=BOTTLE_DATA=/srv/bottle/data/bottle.json
+Environment=BOTTLE_SEEDS_DIR=/srv/bottle/seeds
+Environment=BOTTLE_LEDGER=/srv/bottle/seeds/almanac/ledger.json
+Environment=BOTTLE_STATS_JSONL=/srv/bottle/data/stats.jsonl
+Environment=BOTTLE_PUBLIC_STATS=/srv/bottle/app/server/public/stats.json
+Environment=BOTTLE_TZ=Asia/Hong_Kong
+
+# 这个脚本只读数据文件、只写两个产物（一个是 JSONL，一个是公开 JSON）
+ExecStart=/usr/local/bin/node --experimental-strip-types /srv/bottle/app/server/snapshot.ts
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# 种子只读（台账在里面），数据目录可写（追加 jsonl），public 可写（覆写 stats.json）
+ReadOnlyPaths=/srv/bottle/seeds
+ReadWritePaths=/srv/bottle/data
+ReadWritePaths=/srv/bottle/app/server/public
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bottle-stats

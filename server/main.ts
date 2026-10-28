@@ -12,7 +12,8 @@
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { seaStateAt } from '../shared/tide.ts';
 import { createApi, type Api } from './app.ts';
 import { Db } from './db.ts';
 import { SeedStore } from './seeds.ts';
@@ -93,6 +94,62 @@ function sendHtml(res: ServerResponse, status: number, html: string, headOnly = 
   });
   // HEAD 只回头，不返 body（但要带正确的 content-length）
   res.end(headOnly ? undefined : html);
+}
+
+/** 大屏读的那个文件，由 `snapshot` 脚本每天原子覆写。 */
+const STATS_JSON = fileURLToPath(new URL('./public/stats.json', import.meta.url));
+
+/**
+ * 大屏的数据源：一个**静态文件**，里面只有盲化后的数字。
+ *
+ * 它不是接口——不读数据库、不认 token、不回显请求参数，和大屏要的「只给数字」正好对上。
+ * 还没生成时给 503，别让大屏把「没有文件」误读成「海上真的空了」。
+ */
+function sendStatsJson(res: ServerResponse, headOnly = false): void {
+  let text: string;
+  try {
+    text = readFileSync(STATS_JSON, 'utf8');
+  } catch {
+    send(res, 503, { error: 'not_ready', message: '还没有生成统计快照。' });
+    return;
+  }
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(text),
+    'cache-control': 'public, max-age=60',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(headOnly ? undefined : text);
+}
+
+/**
+ * 落地页里那一段「此刻的海」。
+ *
+ * 服务端在发页之前把数字**填进 HTML**，而不是让浏览器去 fetch：
+ * 这样这一页仍然是纯静态文字，CSP 可以继续是 `default-src 'none'`，一行 JS 都不用。
+ */
+function renderSeaBlock(db: Db, at: number): string {
+  const sea = seaStateAt(at);
+  const t = db.tsunamiSummary();
+  const tide = sea.tide.state === '平' ? '潮水很稳' : `${sea.tide.state}潮`;
+  const waves =
+    t.count === 0
+      ? '这片海还没有起过浪。'
+      : `这片海经历过 ${t.count} 次浪，最近一次在 ${Math.max(
+          0,
+          Math.floor((at - (t.lastAt ?? at)) / 86_400_000),
+        )} 天前，一共拍碎了 ${t.totalLost} 个瓶子。`;
+  return (
+    '<div class="surprise"><b>栖潮海 · 第 ' +
+    `${sea.day} 天</b><br>` +
+    `此刻${tide}，潮位 ${sea.tide.level}；${sea.wind.dir}风 ${sea.wind.level} 级；` +
+    `${sea.moon.name}；能见度${sea.visibility}；水温 ${sea.waterTempC}℃。<br>${waves}</div>`
+  );
+}
+
+/** 把海况填进落地页模板。模板只读一次，填充是纯字符串替换。 */
+function landingPage(db: Db, at: number): string {
+  return landingHtml().replace('<!--SEA-->', renderSeaBlock(db, at));
 }
 
 export interface BottleServerOptions {
@@ -185,7 +242,13 @@ export function createBottleServer(opts: BottleServerOptions): BottleServer {
         // HEAD 也要认：`curl -I`、反代健康检查、部分浏览器预检都发 HEAD，
         // 落到 401 分支会让运维误判「服务挂了」。
         if ((method === 'GET' || method === 'HEAD') && (path === '/' || path === '/index.html')) {
-          sendHtml(res, 200, landingHtml(), method === 'HEAD');
+          // 把「此刻的海」填进去：页面因此每天都不一样，但依然没有一行 JS
+          sendHtml(res, 200, landingPage(db, Date.now()), method === 'HEAD');
+          return;
+        }
+        // 大屏的数据源。和落地页一样是「纯静态一跳」：不认 token、不碰数据库。
+        if ((method === 'GET' || method === 'HEAD') && path === '/stats.json') {
+          sendStatsJson(res, method === 'HEAD');
           return;
         }
         // 浏览器顺手要的，给个空图省得日志里一堆 404

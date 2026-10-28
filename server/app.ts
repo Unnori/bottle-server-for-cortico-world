@@ -5,7 +5,6 @@
  * 一条贯穿全文件的规矩：**请求体里的 time / count 一律不看**，所有判定都读服务端的时钟与计数。
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { basename } from 'node:path';
 import {
   MAX_THROWS,
   REPLY_WINDOW_HOURS,
@@ -16,6 +15,7 @@ import {
   type Quota,
 } from '../shared/contract.ts';
 import { checkBody } from '../shared/text.ts';
+import { seaStateAt } from '../shared/tide.ts';
 import { type Db, type BotRow, type LetterRow } from './db.ts';
 import { computeQuota, resetDaily, rulesFromEnv, type QuotaRules } from './quota.ts';
 import { SEED_FROM, type SeedLetter, type SeedStore } from './seeds.ts';
@@ -228,11 +228,14 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     letter.catcherHash = null;
     letter.caughtAt = null;
     letter.replyWindowUntil = null;
+    // 回海了就不再是「已归档」：死法标记要清掉，否则统计会把回海的信算成沉底
+    letter.archivedReason = undefined;
   }
 
   /** 裂开沉底：不再出现在任何人的海里。 */
   function sink(letter: LetterRow): void {
     letter.state = 'archived';
+    letter.archivedReason = 'sunk';
     letter.catcherHash = null;
     letter.caughtAt = null;
     letter.replyWindowUntil = null;
@@ -384,7 +387,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     return ok(res);
   }
 
-  /** 只从这个用户还没见过的种子里挑；超过每人上限就当他已经见过邮局了。 */
+  /** 只从这个客户端还没见过的种子里挑；超过每人上限就当他已经见过邮局了。 */
   function pickSeed(bot: BotRow): SeedLetter | null {
     if (!seeds) return null;
     const used = db.seedUsesFor(bot.clientHash);
@@ -572,8 +575,13 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   }
 
   /**
-   * 运维探针，不需要 token（只有计数，没有内容）。
-   * §13.6 第 13 条靠它验收：改了 seeds/ 之后 generation 变了，而 startedAt 没变 = 热载没重启。
+   * 运维探针，不需要 token。
+   *
+   * **只报「进程活着」和「种子热载」，一个业务数字都不报。**
+   * 它是公网可读的：只要给出池子计数或种子总数，任何人都能把大屏上那些
+   * 经过盲化的数字减回真值。业务数字走两条路——
+   *   · `data/stats.jsonl`：真数，只在服务器上，运维自己看
+   *   · `public/stats.json`：盲化后的数，给大屏看
    */
   function handleHealth(): ApiResponse {
     const stats = seeds?.stats();
@@ -582,19 +590,9 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       startedAt: new Date(startedAt).toISOString(),
       uptimeMs: Math.max(0, now() - startedAt),
       seeds: {
-        // 这是无鉴权探针：公网任何人不带 token 都能读，所以只报目录名，不报绝对路径。
-        // 报绝对路径会泄露服务器的目录结构——落地页那条断言（landing.test.ts）
-        // 守的就是这个，这里曾经漏掉了。
-        dir: stats?.dir ? basename(stats.dir) : '',
-        count: stats?.count ?? 0,
         generation: stats?.generation ?? 0,
         loadedAt: stats?.loadedAt ? new Date(stats.loadedAt).toISOString() : null,
         errors: stats?.errors ?? [],
-      },
-      pool: {
-        floating: db.letters.filter((letter) => letter.state === 'floating').length,
-        caught: db.letters.filter((letter) => letter.state === 'caught').length,
-        archived: db.letters.filter((letter) => letter.state === 'archived').length,
       },
     });
   }
@@ -603,7 +601,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     const at = now();
     const changed = resetDaily(bot, dayIn(timeZone, at));
     if (sweep(at) || changed) db.save();
-    // 顺路带上海啸记录：客户端每 5 分钟取一次额度，正好在这里发现「该告诉主人了」
+    // 顺路带上海啸记录：客户端每 5 分钟取一次额度，正好在这里发现「该告诉人类了」
     const t = db.tsunamiSummary();
     return ok({
       ...quotaFor(bot),
@@ -616,15 +614,37 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     });
   }
 
+  /**
+   * 此刻的海。**公开、无需鉴权**——因为它只有世界事实，没有一条关于用户的信息。
+   *
+   * 落地页和将来的大屏都从这里取，所以它必须稳定、可缓存、可测试。
+   * 注意只给「一共拍碎了多少」，不给每次海啸的原因（那是运维自己的话）。
+   */
+  function handleSea(): ApiResponse {
+    const at = now();
+    const t = db.tsunamiSummary();
+    return ok({
+      ...seaStateAt(at),
+      waves: {
+        count: t.count,
+        lastDaysAgo: t.lastAt === null ? null : Math.max(0, Math.floor((at - t.lastAt) / 86_400_000)),
+        shattered: t.totalLost,
+      },
+    });
+  }
+
   return {
     handle(req: ApiRequest): ApiResponse {
       const path = req.path.replace(/\/+$/, '') || '/';
 
       if (req.method === 'POST' && path === '/register') return handleRegister(req);
       if (req.method === 'GET' && path === '/health') return handleHealth();
+      if (req.method === 'GET' && path === '/sea') return handleSea();
 
       const bot = authenticate(req.token);
       if (!bot) return fail(401, 'unauthorized', '先注册，或者带上有效的 token。');
+      // 「这个人今天来过」。只在跨天时随 resetDaily 一起落盘，所以精度是天级，不是秒级。
+      bot.lastSeenAt = now();
 
       if (req.method === 'POST' && path === '/throw') return handleThrow(req, bot);
       if (req.method === 'POST' && path === '/catch') return handleCatch(req, bot);

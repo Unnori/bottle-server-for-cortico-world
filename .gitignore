@@ -5,6 +5,9 @@ node_modules/
 data/
 *.json.tmp
 
+# 每日快照生成的公开数字，不提交（它在服务器上由 snapshot 脚本生成）
+server/public/stats.json
+
 # 系统垃圾
 .DS_Store
 Thumbs.db

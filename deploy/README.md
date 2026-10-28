@@ -190,3 +190,56 @@ curl -s http://127.0.0.1:8787/health | jq
 | 种子没更新 | `curl /health \| jq .seeds`：`errors` 有没有、`generation` 变没变 |
 | 备份没产出 | `systemctl status bottle-backup.service`、`journalctl -t bottle-backup -n 50` |
 | 参数改了没反应 | `tuning.json` 的 mtime 变了没、JSON 有没有写坏（5 秒不生效多半是写坏了） |
+
+---
+
+## 10. 统计快照与「世界台账」
+
+### 每天一次快照
+
+```bash
+sudo cp deploy/bottle-stats.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bottle-stats.timer
+sudo systemctl start bottle-stats.service     # 先手动跑一次看结果
+sudo journalctl -t bottle-stats -n 20 --no-pager
+```
+
+它产出两份文件，**分开存、分开公开**：
+
+| 文件 | 内容 | 谁看 |
+|---|---|---|
+| `/srv/bottle/data/stats.jsonl` | 每天一行真数（注册/活跃/投递/回信率/种子领取/海啸损失…） | 你自己 `tail -1` 看 |
+| `/srv/bottle/app/server/public/stats.json` | 盲化后的数字，由 `GET /stats.json` 公开 | 大屏 |
+
+> 这个脚本用 `Db.readRaw()` 只读打开数据文件。**千万不要把它改成 `Db.open()`**——
+> 后者会把还漂着的信判定成海啸并立刻写盘，等于每天夜里自己制造一次海啸。
+
+### 世界台账
+
+`/srv/bottle/seeds/almanac/ledger.json`，和种子一起从 git 同步，服务端只读、热载：
+
+```json
+{ "npcCount": 0, "residentLettersTotal": 90, "islands": 0, "harbors": 0,
+  "lighthouses": 0, "postmen": 0, "coastlineKm": 0, "tideLetterFactor": 0.3 }
+```
+
+- `npcCount` / `residentLettersTotal` 是**盲化的加数**：公开的「居民数量」= 真实玩家 + `npcCount`
+- 全部填 0 = 完全不放水，公开数字就是真数
+- 改完 `git push`，服务器 5 分钟内自动拉取
+
+### 怎么看真数
+
+```bash
+# 今天这一行
+sudo cat /srv/bottle/data/stats.jsonl | tail -1 | jq
+# 最近 30 天的活跃曲线（够画大屏了）
+sudo jq -s 'map({date, botsActive, botsTotal, thrownToday, repliesToday})' /srv/bottle/data/stats.jsonl
+```
+
+### 公开的两条「纯世界事实」接口
+
+- `GET /sea`：潮汐、月相、风、能见度、水温、日出日落 + 这片海起过几次浪
+- `GET /stats.json`：大屏读的那个文件（由快照生成，没有生成时返回 503）
+
+两者都不含任何与用户有关的信息，所以可以直接公开、可以缓存、可以给搜索引擎。

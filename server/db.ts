@@ -6,7 +6,7 @@
  *
  * **海啸是要记账的**：重启时把还漂着的信判定为 `archived` 的那一刻，顺手写一条
  * `tsunami` 记录（时间 + 原因 + 丢了几封）。没有这条记录，运维只能靠「怎么没人写信了」
- * 去猜，客户端也没法把「海上起了一场海啸」讲给主人听。
+ * 去猜，客户端也没法把「海上起了一场海啸」讲给人类听。
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -27,6 +27,13 @@ export interface BotRow {
   repliesMade: number;
   /** 今天领过几封系统邮件（海边邮局通道）。老数据没有这个字段，读时按 0 算。 */
   mailTaken?: number;
+  /**
+   * 最后一次有请求的时刻。DAU 与留存全靠它。
+   *
+   * 只在**跨天**时顺手落盘（避免每个请求都写文件），所以精度是天级、不是秒级。
+   * 老数据没有这个字段，统计时退回用 `lastResetDate` 估。
+   */
+  lastSeenAt?: number;
 }
 
 export interface LetterRow {
@@ -43,6 +50,13 @@ export interface LetterRow {
   deliveredCount: number;
   /** 被扔回海里的次数；满 5 次裂开沉底。 */
   throws: number;
+  /**
+   * 进 `archived` 是哪种死法：
+   *   · `sunk`    —— 被扔回海里满 5 次，瓶子裂开沉底
+   *   · `tsunami` —— 服务端重启，还漂在海面上的信被浪拍碎
+   * 没有这个字段，「下沉率」和「海啸损失」两个数会混成一个，都失真。
+   */
+  archivedReason?: 'sunk' | 'tsunami';
 }
 
 export interface ReplyRow {
@@ -83,6 +97,11 @@ export interface TsunamiEvent {
 export interface TsunamiState {
   count: number;
   lastAt: number | null;
+  /**
+   * 历次海啸一共拍碎了多少封。`log` 只留最近 20 条，所以不能靠它求和——
+   * 大屏要「累计被拍碎几封」就得单独存这个只增不减的数。
+   */
+  totalLost: number;
   /** 最近若干次，新的在前；只留 20 条，够运维回溯就行。 */
   log: TsunamiEvent[];
 }
@@ -111,7 +130,7 @@ export class Db {
   letters: LetterRow[] = [];
   replies: ReplyRow[] = [];
   seedUses: SeedUseRow[] = [];
-  tsunami: TsunamiState = { count: 0, lastAt: null, log: [] };
+  tsunami: TsunamiState = { count: 0, lastAt: null, totalLost: 0, log: [] };
 
   /**
    * `file` 为 null 时纯内存，测试用。
@@ -132,6 +151,37 @@ export class Db {
     return db;
   }
 
+  /**
+   * **只读打开**：不改任何状态、不巡查海啸、不写盘。
+   *
+   * 给统计脚本用。它绝对不能走 `open()` —— 那个一旦发现磁盘上有 `floating` 的信，
+   * 就会判定为海啸、把信全部归档**并立刻 `save()`**，
+   * 等于每天夜里亲手制造一次海啸。统计必须只看得见，不动手。
+   */
+  static readRaw(file: string | null): Db {
+    const db = new Db(file);
+    if (!file || !existsSync(file)) return db;
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<DbFile>;
+      db.bots = Array.isArray(parsed.bots) ? parsed.bots.filter(isBot) : [];
+      // 注意：这里**不做** floating → archived 的转换，统计要看到盘上真实的样子
+      db.letters = (Array.isArray(parsed.letters) ? parsed.letters.filter(isLetter) : []).map((row) => ({
+        ...row,
+        body: '',
+        throws: Number(row.throws ?? 0),
+      }));
+      db.replies = (Array.isArray(parsed.replies) ? parsed.replies.filter(isReply) : []).map((row) => ({
+        ...row,
+        body: '',
+      }));
+      db.seedUses = Array.isArray(parsed.seedsUsed) ? parsed.seedsUsed.filter(isSeedUse) : [];
+      db.tsunami = normalizeTsunami(parsed.tsunami);
+    } catch {
+      // 坏文件就是空库：统计失败也不该把运维挡在门外
+    }
+    return db;
+  }
+
   private load(opts: DbOpenOptions = {}): void {
     if (!this.file || !existsSync(this.file)) return;
     let lost = 0;
@@ -143,6 +193,7 @@ export class Db {
         // 正文已经没了：浮着的信捞不起来，等于被海啸带走了
         if (letter.state === 'floating') {
           letter.state = 'archived';
+          letter.archivedReason = 'tsunami';
           lost += 1;
         }
         return letter;
@@ -160,7 +211,7 @@ export class Db {
       this.letters = [];
       this.replies = [];
       this.seedUses = [];
-      this.tsunami = { count: 0, lastAt: null, log: [] };
+      this.tsunami = { count: 0, lastAt: null, totalLost: 0, log: [] };
       return;
     }
 
@@ -176,6 +227,7 @@ export class Db {
     const event: TsunamiEvent = { at, reason: reason.trim() || 'unplanned', lost };
     this.tsunami.count += 1;
     this.tsunami.lastAt = at;
+    this.tsunami.totalLost = (this.tsunami.totalLost ?? 0) + lost;
     this.tsunami.log = [event, ...this.tsunami.log].slice(0, TSUNAMI_LOG_MAX);
   }
 
@@ -199,13 +251,14 @@ export class Db {
     }
   }
 
-  /** 给 `/quota` 用：客户端据此判断「主人该知道一场海啸了」。 */
-  tsunamiSummary(): { count: number; lastAt: number | null; lost: number; reason: string } {
+  /** 给 `/quota` 与 `/sea` 用。 */
+  tsunamiSummary(): { count: number; lastAt: number | null; lost: number; totalLost: number; reason: string } {
     const last = this.tsunami.log[0];
     return {
       count: this.tsunami.count,
       lastAt: this.tsunami.lastAt,
       lost: last?.lost ?? 0,
+      totalLost: this.tsunami.totalLost ?? 0,
       reason: last?.reason ?? '',
     };
   }
@@ -278,6 +331,7 @@ function normalizeTsunami(value: unknown): TsunamiState {
   return {
     count: typeof raw?.count === 'number' && raw.count >= 0 ? raw.count : 0,
     lastAt: typeof raw?.lastAt === 'number' ? raw.lastAt : null,
+    totalLost: typeof raw?.totalLost === 'number' && raw.totalLost >= 0 ? raw.totalLost : 0,
     log,
   };
 }

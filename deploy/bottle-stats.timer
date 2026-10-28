@@ -1,0 +1,11 @@
+[Unit]
+Description=漂流瓶 · 每天生成一次统计快照
+
+[Timer]
+# 00:07 —— 避开备份的 :05，也避开整点
+OnCalendar=*-*-* 00:07:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

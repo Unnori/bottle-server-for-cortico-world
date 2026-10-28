@@ -3,7 +3,7 @@
  *
  * 验收对应关系：
  *   · §13.6 #11 池子没有真人信时捞到种子，来源写「海边邮局」
- *   · §13.6 #12 同一用户不会第二次捞到同一封；捞满 2 封后不再给种子
+ *   · §13.6 #12 同一个人不会第二次捞到同一封；捞满 2 封后不再给种子
  *   · §13.6 #13 改 seeds/ 之后热载生效且进程没重启（用 generation 与 startedAt 钉）
  *   · §13.7 种子不回信、不会裂
  */
@@ -110,7 +110,7 @@ describe('种子瓶 · 取信顺序', () => {
     expect(caught.empty).toBe(false);
     if (caught.empty) return;
 
-    // §13.6 #11：来源必须写明，不能伪装成某个用户，也不能被化成「一位陌生人」
+    // §13.6 #11：来源必须写明，不能伪装成某个人类，也不能被化成「一位陌生人」
     expect(caught.from).toBe('海边邮局');
     expect(caught.seed).toBe(true);
 
@@ -253,15 +253,17 @@ describe('种子瓶 · 热载（§13.6 #13）', () => {
 
     const before = h.api.handle({ method: 'GET', path: '/health', ip: '1.1.1.1' }).body as {
       startedAt: string;
-      seeds: { count: number; generation: number };
+      seeds: { generation: number };
     };
-    expect(before.seeds.count).toBe(1);
+    // `/health` 公网可读，所以它不再报种子条数——那会把大屏的盲化拆掉。
+    // 条数去问 SeedStore 自己。
+    expect(h.seeds.stats().count).toBe(1);
     const generation = before.seeds.generation;
 
     h.addSeed('b.json', { id: 'seed_b', body: '第二版加的一封。' });
 
     const after = h.api.handle({ method: 'GET', path: '/health', ip: '1.1.1.1' }).body as typeof before;
-    expect(after.seeds.count).toBe(2);
+    expect(h.seeds.stats().count).toBe(2);
     expect(after.seeds.generation).toBeGreaterThan(generation);
     // 进程没重启：uptime 的起点没动
     expect(after.startedAt).toBe(before.startedAt);
