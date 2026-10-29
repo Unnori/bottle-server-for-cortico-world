@@ -106,7 +106,15 @@ bottle.example.com {
 {
   "seedsPerDay": 2,
   "seedsGlobalOnce": true,
-  "seedsEnabled": true
+  "seedsEnabled": true,
+
+  "sendBase": 2,
+  "sendCap": 5,
+  "catchBase": 2,
+  "catchCap": 10,
+  "poolDivisor": 5,
+  "replyCap": 3,
+  "maxThrows": 8
 }
 ```
 
@@ -115,6 +123,15 @@ bottle.example.com {
 | `seedsPerDay` | 系统邮件每人每天最多几封，`0` 停发 |
 | `seedsGlobalOnce` | `true` = 同一封种子全服只能被领一次；`false` = 只按人去重 |
 | `seedsEnabled` | 总开关 |
+| `sendBase` / `sendCap` | 今日可寄 = `min(sendCap, sendBase + 今日已回信)` |
+| `catchBase` / `catchCap` / `poolDivisor` | 今日可捞 = `min(catchCap, catchBase + ⌊池/除数⌋ + 今日已寄)` |
+| `replyCap` | **每天最多回几封**。回信是信永久离开海面的唯一大额出口，没闸的话海会一直很薄 |
+| `maxThrows` | 同一只瓶子被扔回海里几次就裂开沉底，默认 `8` |
+
+> 这几个配额参数原本只能靠环境变量，改一次就要重启（=一次海啸）。现在全在 `tuning.json` 里，
+> **调参再也不用付重启的代价**。
+>
+> 优先级：`tuning.json` → 环境变量（`BOTTLE_SEND_BASE` 等）→ 内置默认值。
 
 文件不在或写坏了 → 沿用上一次读到的值，不会把海搞挂。
 环境变量 `BOTTLE_SEEDS_PER_DAY` / `BOTTLE_SEEDS_GLOBAL_ONCE` / `BOTTLE_SEEDS_ENABLED` 可作兜底。

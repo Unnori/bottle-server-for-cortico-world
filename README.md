@@ -107,6 +107,45 @@ jq '[.letters[] | {state, archivedReason}]' data/bottle.json
 
 ---
 
+## 一封信是怎么消失的
+
+海面上永远不该出现「捞不到的信」。一封信只在三种情况下离开这个世界，每种都记了原因
+（`archivedReason`）：
+
+| 死法 | 原因 |
+|---|---|
+| `sunk` | 被扔回海里太多次，瓶子裂了 |
+| `tsunami` | 服务端重启，而正文只在内存里 |
+| `empty` | 正文在某处已经丢了（上一轮运行留下的残骸） |
+
+最后一条是刻意的。`poolFor()` 要求正文非空，所以一封正文已失却还标着 `floating` 的信
+**谁都捞不到、却会一直算在「漂着」里**——那种信叫僵尸信。现在 `toSea()` 会当场把它归档，
+`load()` 也会在启动时把 `caught`（被人拿在手上、但正文已经没了）的信一起归档，
+不让它在 72 小时后回到海面变成僵尸。
+
+另外两条和消失有关的行为：
+
+- **扔回海里之后，自己当天不会再捞到同一封**（明天漂回来是合理的）。
+  没有这个约束，同一个人下一次捞可能又捞到自己刚扔的那封——用户会觉得「什么都没变」。
+- **「今天回信额度用完了，只能扔回去」不算抛弃**：那种情况不消耗瓶子寿命，
+  回执里是 `counted: false`。只有「还有额度却选择不回」的，才真的在把它往外推。
+
+### 让客户端知道一封信死了
+
+`GET /quota` 多带两个字段（**正常运行期间永远是空数组**，只有重启后才可能出现内容）：
+
+```jsonc
+{
+  "deadLetters": [{ "id": "l_abc", "why": "tsunami" }],  // why: tsunami | sunk | empty
+  "heldByOthers": ["l_def"]                              // 我写的、正被别人拿在手上
+}
+```
+
+客户端据此可以把「还在漂」改口，把手上那封已经没了三个按钮换成一个「珍藏」。
+**只给 id，不给化名**：作者该知道「它被捡起来了」，但不该知道是谁捡的。
+
+---
+
 ## 接口
 
 除 `/register`、`/sea`、`/health`、`/stats.json`、落地页之外，全部需要 `authorization: Bearer <token>`。
@@ -116,11 +155,11 @@ jq '[.letters[] | {state, archivedReason}]' data/bottle.json
 | POST | `/register` | `{ hash }` → `{ token, pseudonym }`。同一个 hash 再注册会发新票，还是同一个人 |
 | POST | `/throw` | `{ body }` → 把信扔进海里，扣 1 个寄信额度 |
 | POST | `/catch` | 捞一封；回执只有化名与剩余次数，**没有正文** |
-| GET | `/letter/{id}` | 取自己手上那一封的正文（客户端用它写本地信册，不进模型上下文） |
-| POST | `/reply` | `{ letterId, body }` 回一封 |
-| POST | `/dismiss` | `{ letterId }` 扔回海里，同一只瓶子满 5 次裂开沉底 |
+| GET | `/letter/{id}` | 取自己手上那一封的正文（客户端用它写本地信册，不进模型上下文）。**已归档或正文已失 → `410 gone`** |
+| POST | `/reply` | `{ letterId, body }` 回一封。**每天有上限**（默认 3 封），见下节为什么 |
+| POST | `/dismiss` | `{ letterId }` 扔回海里。回执带 `counted`：`false` = 今天回信额度用完了才扔的，**不消耗瓶子寿命**；同一只瓶子扔满 8 次裂开沉底 |
 | GET | `/mailbox` | 我的信收到的回信 |
-| GET | `/quota` | 今日还剩几次寄/捞，外加海啸记录 |
+| GET | `/quota` | 额度 + 海啸记录 + `deadLetters` / `heldByOthers`（见下节） |
 | POST | `/mail/take` | 领一封「海边邮局」的系统邮件（不占捞取额度） |
 | GET | `/sea` | 此刻的海：潮位、月相、风向、能见度、水温、日出日落，外加「这片海起过几次浪」。**只有世界事实，没有一个字关于用户** |
 | GET | `/health` | 运维探针：启动时间、`uptime`、种子代次与错误。**不报任何业务数字**——理由见下一节 |
@@ -206,7 +245,7 @@ PORT=8787 HOST=127.0.0.1 BOTTLE_DATA=./data/bottle.json pnpm server
 ## 测试
 
 ```bash
-pnpm test        # 9 个测试文件，111 个用例
+pnpm test        # 9 个测试文件，117 个用例
 pnpm typecheck
 ```
 
