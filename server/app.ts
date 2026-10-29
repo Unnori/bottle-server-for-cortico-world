@@ -9,6 +9,7 @@ import {
   MAX_THROWS,
   REPLY_WINDOW_HOURS,
   type CatchRes,
+  type DeadLetter,
   type DismissRes,
   type ErrorCode,
   type MailboxItem,
@@ -208,6 +209,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       catchCap: t.catchCap,
       poolDivisor: t.poolDivisor,
       replyCap: t.replyCap,
+      maxThrows: t.maxThrows,
     };
   }
   const startedAt = options.startedAt ?? now();
@@ -231,10 +233,15 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     return db.botByClientHash(clientHash)?.pseudonym ?? '一位陌生人';
   }
 
-  /** 池子里此刻真能捞的信：不是我写的、浮着、正文还在。 */
+  /** 池子里此刻真能捞的信：不是我写的、浮着、正文还在、今天没被我扔回去过。 */
   function poolFor(bot: BotRow): LetterRow[] {
+    const dismissed = bot.dismissedToday ?? [];
     return db.letters.filter(
-      (letter) => letter.state === 'floating' && letter.authorHash !== bot.clientHash && letter.body !== '',
+      (letter) =>
+        letter.state === 'floating' &&
+        letter.authorHash !== bot.clientHash &&
+        letter.body !== '' &&
+        !dismissed.includes(letter.id),
     );
   }
 
@@ -244,6 +251,16 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
 
   /** 让一封捞起来的信回海。扔回海里算一次；72 小时超时不算。 */
   function toSea(letter: LetterRow): void {
+    // 正文没了的信不能回海：`poolFor` 要求 body 非空，所以它谁都捞不到，
+    // 却会一直算在「漂着」里，把那个数字撑得虚高——这就是僵尸信。收掉它。
+    if (!letter.body) {
+      letter.state = 'archived';
+      letter.archivedReason = 'empty';
+      letter.catcherHash = null;
+      letter.caughtAt = null;
+      letter.replyWindowUntil = null;
+      return;
+    }
     letter.state = 'floating';
     letter.catcherHash = null;
     letter.caughtAt = null;
@@ -496,11 +513,13 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     if (letter.catcherHash !== bot.clientHash) {
       return fail(404, 'not_found', '没有这一封。');
     }
+    // 先判「还在不在」再判「是什么状态」：已归档或正文已失的，对拿着它的人来说
+    // 都是同一件事——这封信没了。返回 410 而不是 404，客户端才能说「字被海带走了」。
+    if (letter.state === 'archived' || !letter.body) {
+      return fail(410, 'gone', '这一封的字已经被海啸带走了。');
+    }
     if (letter.state !== 'caught' && letter.state !== 'replied') {
       return fail(404, 'not_found', '这一封已经不在你手上了。');
-    }
-    if (!letter.body) {
-      return fail(410, 'gone', '这一封的字已经被海啸带走了。');
     }
     return ok({ body: letter.body, from: pseudonymOf(letter.authorHash) });
   }
@@ -574,14 +593,22 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       return fail(404, 'not_found', '没有这一封。');
     }
 
-    // 扔回海里算一次。第五次之后它裂开沉底，不再漂回来。
-    letter.throws += 1;
-    const sank = letter.throws >= MAX_THROWS;
+    // 「今天回信额度用完了，只能扔回去」不是不想回，所以**不消耗瓶子的寿命**。
+    // 只有那种「还有额度却选择不回」的，才算它被抛弃了一次。
+    const replyCap = rules.replyCap ?? DEFAULT_RULES.replyCap ?? 3;
+    const counted = bot.repliesMade < replyCap;
+    if (counted) letter.throws += 1;
+
+    // 记进「今天扔过的」：否则下一次捞可能又捞到自己刚扔掉的那一封，用户会觉得没变化
+    bot.dismissedToday = [...(bot.dismissedToday ?? []), letter.id].slice(-50);
+
+    const maxThrows = rules.maxThrows ?? DEFAULT_RULES.maxThrows ?? MAX_THROWS;
+    const sank = letter.throws >= maxThrows;
     if (sank) sink(letter);
     else toSea(letter);
 
     db.save();
-    const res: DismissRes = { ok: true, quota: quotaFor(bot), throws: letter.throws, sank };
+    const res: DismissRes = { ok: true, quota: quotaFor(bot), throws: letter.throws, sank, counted };
     return ok(res);
   }
 
@@ -630,10 +657,41 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     const at = now();
     const changed = resetDaily(bot, dayIn(timeZone, at));
     if (sweep(at) || changed) db.save();
+
+    // 「与我有关、但已经不能用」的信：客户端据此把「还在漂」「还有 72 小时回海」改口。
+    // 正常运行期间这两组永远是空的——正文都在进程内存里，只有重启后才会出现空的。
+    // 用这个而不是让客户端逐个去查 `/letter/{id}`：一次请求就够，而且绝对准确。
+    const deadLetters: DeadLetter[] = [];
+    const heldByOthers: string[] = [];
+    for (const letter of db.letters) {
+      const mine = letter.authorHash === bot.clientHash;
+      const heldByMe = letter.catcherHash === bot.clientHash;
+      if (!mine && !heldByMe) continue;
+      // 已经回过信的算成功收场，不是死
+      if (letter.state === 'replied') continue;
+      if (letter.state === 'archived') {
+        const why = letter.archivedReason;
+        if (why === 'tsunami' || why === 'sunk' || why === 'empty') {
+          deadLetters.push({ id: letter.id, why });
+        }
+        continue;
+      }
+      if (!letter.body) {
+        deadLetters.push({ id: letter.id, why: 'empty' });
+        continue;
+      }
+      // 我写的、正被别人拿在手上——让作者知道「它被捡起来了」，但不透露是谁
+      if (mine && letter.state === 'caught' && letter.catcherHash !== bot.clientHash) {
+        heldByOthers.push(letter.id);
+      }
+    }
+
     // 顺路带上海啸记录：客户端每 5 分钟取一次额度，正好在这里发现「该告诉人类了」
     const t = db.tsunamiSummary();
     return ok({
       ...quotaFor(bot),
+      deadLetters: deadLetters.slice(-50),
+      heldByOthers: heldByOthers.slice(-50),
       tsunami: {
         count: t.count,
         lastAt: t.lastAt === null ? null : new Date(t.lastAt).toISOString(),

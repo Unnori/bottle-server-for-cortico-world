@@ -34,6 +34,14 @@ export interface BotRow {
    * 老数据没有这个字段，统计时退回用 `lastResetDate` 估。
    */
   lastSeenAt?: number;
+  /**
+   * 今天被我扔回海里的信。
+   *
+   * 为什么要有：扔回去之后 `catcherHash` 会被清空，如果没有这个名单，
+   * 同一个人下一次捞可能又捞到**自己刚扔掉的那一封**——用户会觉得"根本没变化"。
+   * 只去重「今天」：明天它漂回来是合理的，那是它又漂回来了。
+   */
+  dismissedToday?: string[];
 }
 
 export interface LetterRow {
@@ -52,11 +60,12 @@ export interface LetterRow {
   throws: number;
   /**
    * 进 `archived` 是哪种死法：
-   *   · `sunk`    —— 被扔回海里满 5 次，瓶子裂开沉底
-   *   · `tsunami` —— 服务端重启，还漂在海面上的信被浪拍碎
-   * 没有这个字段，「下沉率」和「海啸损失」两个数会混成一个，都失真。
+   *   · `sunk`    —— 被扔回海里太多次，瓶子裂开沉底
+   *   · `tsunami` —— 服务端重启，正文只在内存里，于是没了
+   *   · `empty`   —— 正文在某处已经丢了，这封信谁也捞不到，收掉别再占着海面
+   * 没有这个字段，「下沉」和「海啸损失」会混成一个数，两个指标都失真。
    */
-  archivedReason?: 'sunk' | 'tsunami';
+  archivedReason?: 'sunk' | 'tsunami' | 'empty';
 }
 
 export interface ReplyRow {
@@ -107,6 +116,8 @@ export interface TsunamiState {
 }
 
 const TSUNAMI_LOG_MAX = 20;
+/** 每人每天最多记多少封「今天扔回去的」——够挡住重复捞同一封，又不会无限长。 */
+const DISMISSED_KEEP = 50;
 
 interface DbFile {
   version: 2;
@@ -187,14 +198,28 @@ export class Db {
     let lost = 0;
     try {
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<DbFile>;
-      this.bots = Array.isArray(parsed.bots) ? parsed.bots.filter(isBot) : [];
+      this.bots = (Array.isArray(parsed.bots) ? parsed.bots.filter(isBot) : []).map((bot) => ({
+        ...bot,
+        dismissedToday: Array.isArray(bot.dismissedToday)
+          ? bot.dismissedToday.filter((id): id is string => typeof id === 'string').slice(-DISMISSED_KEEP)
+          : undefined,
+      }));
       this.letters = (Array.isArray(parsed.letters) ? parsed.letters.filter(isLetter) : []).map((row) => {
         const letter: LetterRow = { ...row, body: '', throws: Number(row.throws ?? 0) };
-        // 正文已经没了：浮着的信捞不起来，等于被海啸带走了
+        // 正文只在内存里，所以重启之后「还活着的信」全都已经废了：
+        //   · floating → 归档，并计入这次海啸丢掉的封数（它本来漂在海面上）
+        //   · caught   → 也归档，但**不计入 lost**：海啸那句话只说「海面上的」，
+        //                说满了反而骗人；运营侧靠 archivedReason 看得到它
+        //
+        // 不归档 caught 的话，它会在 72 小时后被 sweep 放回海里，而正文已经没了——
+        // 变成一封谁都捞不到、却一直算在「漂着」里的僵尸信。
         if (letter.state === 'floating') {
           letter.state = 'archived';
           letter.archivedReason = 'tsunami';
           lost += 1;
+        } else if (letter.state === 'caught') {
+          letter.state = 'archived';
+          letter.archivedReason = 'tsunami';
         }
         return letter;
       });

@@ -61,6 +61,7 @@ function rig(opts: { seedChannel?: 'mail' | 'catch'; tuning?: Partial<Tuning>; s
     catchCap: 10,
     poolDivisor: 5,
     replyCap: 3,
+    maxThrows: 8,
     ...opts.tuning,
   };
   const reader: TuningReader = { current: () => tuning };

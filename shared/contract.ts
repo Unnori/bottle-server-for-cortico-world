@@ -24,6 +24,17 @@ export interface TsunamiSummary {
   reason: string;
 }
 
+/** 一封「与我有关、但已经不能用」的信，以及它为什么没了。 */
+export interface DeadLetter {
+  id: string;
+  /**
+   * · `tsunami` —— 服务端重启，正文只在内存里，于是没了
+   * · `sunk`    —— 漂太久没人愿意回，瓶子裂开沉底
+   * · `empty`   —— 正文在某处已经丢失（僵尸信清理）
+   */
+  why: 'tsunami' | 'sunk' | 'empty';
+}
+
 export interface Quota {
   bottles_left: number;
   catches_left: number;
@@ -34,6 +45,20 @@ export interface Quota {
    * 它的存在是为了让客户端能提前说「今天回信额度用完了」，而不是等第 4 次回信被 429。
    */
   replies_left?: number;
+  /**
+   * 与我有关、已经彻底不能用的信 id（我写的 + 我捞到的都算）。
+   *
+   * 客户端据此把「还在漂」改成「迷失在海啸中」、把手上那封的三个按钮换成「珍藏」。
+   * 正常运行期间这里永远是空数组——正文都在进程内存里，只有重启后才可能出现空的。
+   * 用这个而不是让客户端逐个去查：一次 `/quota` 就够，而且绝对准确。
+   */
+  deadLetters?: DeadLetter[];
+  /**
+   * 我写的信里，正被别人拿在手上的。
+   *
+   * 只给 id、不给化名：作者该知道「它被捡起来了」，但不该知道是谁捡的。
+   */
+  heldByOthers?: string[];
   tsunami?: TsunamiSummary;
 }
 
@@ -140,6 +165,13 @@ export interface DismissRes {
   sank: boolean;
   /** 种子瓶没有裂缝这回事：throws 恒为 0，只表示人类收好了。 */
   seed?: boolean;
+  /**
+   * 这一次**算不算**扔（记进裂缝）。
+   *
+   * `false` = 人类只是「今天回信额度用完了」才扔回去的，不是不想回，
+   * 所以不该消耗瓶子的寿命。客户端可以据此说「明天还能回」而不是「它快裂了」。
+   */
+  counted?: boolean;
 }
 
 export interface OkRes {
@@ -158,5 +190,12 @@ export interface MailboxItem {
 export type MailboxRes = MailboxItem[];
 
 export const REPLY_WINDOW_HOURS = 72;
-/** 同一只瓶子被扔回海里这么多次，就裂开沉底，不再出现。 */
-export const MAX_THROWS = 5;
+/**
+ * 同一只瓶子被扔回海里这么多次，就裂开沉底，不再出现。
+ *
+ * 5 → 8 的理由：现在「回信额度用完了，只能扔回去」是正常操作，不该算作抛弃。
+ * 服务端已经不再给这种情况计数（见 `handleDismiss` 的 `outOfReplies`），
+ * 这个上限是给「真的没人愿意回」的信留的余地。**改它请改 `tuning.json` 的 `maxThrows`**，
+ * 这里只是兜底默认值。
+ */
+export const MAX_THROWS = 8;

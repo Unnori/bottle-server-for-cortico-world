@@ -41,6 +41,13 @@ export interface Tuning {
    *   · 留出 +2 封/人/天的净增长，让池子真的变厚
    */
   replyCap: number;
+  /**
+   * 同一只瓶子被扔回海里几次就裂开沉底。
+   *
+   * 默认值与 `shared/contract.ts` 的 `MAX_THROWS` 一致，但**以这里为准**——
+   * 这样以后想调它不用再重启（重启就是海啸，代价太大）。
+   */
+  maxThrows: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -53,6 +60,7 @@ export const DEFAULT_TUNING: Tuning = {
   catchCap: 10,
   poolDivisor: 5,
   replyCap: 3,
+  maxThrows: 8,
 };
 
 export interface TuningReader {
@@ -110,6 +118,7 @@ function readOnce(file: string | null, env: NodeJS.ProcessEnv): Tuning {
     catchCap: pickInt(raw.catchCap ?? env.BOTTLE_CATCH_CAP, DEFAULT_TUNING.catchCap, 0),
     poolDivisor: pickInt(raw.poolDivisor ?? env.BOTTLE_POOL_DIVISOR, DEFAULT_TUNING.poolDivisor, 1),
     replyCap: pickInt(raw.replyCap ?? env.BOTTLE_REPLY_CAP, DEFAULT_TUNING.replyCap, 0),
+    maxThrows: pickInt(raw.maxThrows ?? env.BOTTLE_MAX_THROWS, DEFAULT_TUNING.maxThrows, 1),
   };
 }
 

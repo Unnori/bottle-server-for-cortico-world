@@ -23,6 +23,8 @@ export interface QuotaRules {
   poolDivisor: number;
   /** 每天最多回几封。可省略，省略时按 `DEFAULT_RULES.replyCap`。 */
   replyCap?: number;
+  /** 同一只瓶子被扔回海里几次就裂开沉底。可省略，省略时按 `DEFAULT_RULES.maxThrows`。 */
+  maxThrows?: number;
 }
 
 export const DEFAULT_RULES: QuotaRules = {
@@ -32,6 +34,7 @@ export const DEFAULT_RULES: QuotaRules = {
   catchCap: 10,
   poolDivisor: 5,
   replyCap: 3,
+  maxThrows: 8,
 };
 
 function positiveInt(raw: string | undefined, fallback: number): number {
@@ -54,7 +57,7 @@ export function rulesFromEnv(env: NodeJS.ProcessEnv = process.env): QuotaRules {
   };
 }
 
-/** 每日 0 点（服务器时区）惰性重置：下一次请求时发现日期变了就把四个计数清零。 */
+/** 每日 0 点（服务器时区）惰性重置：下一次请求时发现日期变了就把计数清零。 */
 export function resetDaily(bot: BotRow, today: string): boolean {
   if (bot.lastResetDate === today) return false;
   bot.lastResetDate = today;
@@ -63,6 +66,8 @@ export function resetDaily(bot: BotRow, today: string): boolean {
   bot.repliesMade = 0;
   // 系统邮件是独立通道，但它自己也有每日上限
   bot.mailTaken = 0;
+  // 「今天扔回去的」过了这一天就不再算：明天它漂回来是合理的，那是它又漂回来了
+  bot.dismissedToday = [];
   return true;
 }
 

@@ -168,7 +168,7 @@ describe('服务端 · 回信与信箱', () => {
     expect(again.empty).toBe(true);
   });
 
-  it('扔回海里：瓶子回海，可以再被捞到，并记一次', () => {
+  it('扔回海里：瓶子回海，但**同一个人当天不会再捞到它**', () => {
     const h = setup();
     const a = h.register('a');
     const b = h.register('b');
@@ -178,10 +178,17 @@ describe('服务端 · 回信与信箱', () => {
 
     const res = h.call('POST', '/dismiss', b.token, { letterId: caught.letterId });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ ok: true, throws: 1, sank: false });
+    expect(res.body).toMatchObject({ ok: true, throws: 1, sank: false, counted: true });
 
+    // 关键：刚扔回去的那封，自己当天不会再捞到（否则用户会觉得"根本没变化"）
     const again = catchOf(h.call('POST', '/catch', b.token));
-    expect(again.empty).toBe(false);
+    expect(again.empty).toBe(true);
+
+    // 但别人照样能捞到它——它确实回到海里了
+    const c = h.register('c');
+    const other = catchOf(h.call('POST', '/catch', c.token));
+    expect(other.empty).toBe(false);
+    if (!other.empty) expect(other.letterId).toBe(caught.letterId);
   });
 
   it('72 小时没处理就自己回海，不算扔回海里', () => {
@@ -200,31 +207,90 @@ describe('服务端 · 回信与信箱', () => {
     expect(h.db.letters[0]!.throws).toBe(0);
   });
 
-  it('扔回海里五次就裂开沉底，不再出现', () => {
+  it('扔回海里八次就裂开沉底，不再出现（每次由不同的人扔）', () => {
     const h = setup();
     const a = h.register('a');
-    const b = h.register('b');
-    h.call('POST', '/throw', a.token, { body: '第五次之后就别再出现了。' });
+    h.call('POST', '/throw', a.token, { body: '第八次之后就别再出现了。' });
 
-    for (let round = 1; round <= 5; round++) {
-      const caught = catchOf(h.call('POST', '/catch', b.token));
+    // 同一个人当天只能扔一次（扔回去的自己也捞不到），所以每轮换一个人
+    for (let round = 1; round <= 8; round++) {
+      const u = h.register(`u${round}`);
+      const caught = catchOf(h.call('POST', '/catch', u.token));
       expect(caught.empty).toBe(false);
       if (caught.empty) return;
 
-      const res = h.call('POST', '/dismiss', b.token, { letterId: caught.letterId });
-      expect(res.body).toMatchObject({ throws: round, sank: round === 5 });
+      const res = h.call('POST', '/dismiss', u.token, { letterId: caught.letterId });
+      expect(res.body).toMatchObject({ throws: round, sank: round === 8, counted: true });
     }
 
-    const after = catchOf(h.call('POST', '/catch', b.token));
+    const after = catchOf(h.call('POST', '/catch', h.register('z').token));
     expect(after.empty).toBe(true);
     expect(h.db.letters[0]!.state).toBe('archived');
-    expect(h.db.letters[0]!.throws).toBe(5);
-    expect(h.db.letters[0]!.deliveredCount).toBe(5);
+    expect(h.db.letters[0]!.archivedReason).toBe('sunk');
+    expect(h.db.letters[0]!.throws).toBe(8);
+  });
+
+  it('回信额度用完后扔回海里，不记进裂缝（那不是"不想回"）', () => {
+    const h = setup();
+    const a = h.register('a');
+    const b = h.register('b');
+    h.call('POST', '/throw', a.token, { body: '这一封只是暂时回不了。' });
+    const caught = catchOf(h.call('POST', '/catch', b.token));
+    if (caught.empty) throw new Error('应该捞到');
+
+    // 把这个人今天的回信额度（默认 3 封）用完
+    const me = h.db.bots[h.db.bots.length - 1]!;
+    me.repliesMade = 3;
+
+    const res = h.call('POST', '/dismiss', b.token, { letterId: caught.letterId });
+    expect(res.body).toMatchObject({ throws: 0, sank: false, counted: false });
+    expect(h.db.letters[0]!.throws).toBe(0);
+  });
+
+  it('正文丢了的信不会回海变成僵尸，直接归档', () => {
+    const h = setup();
+    const a = h.register('a');
+    const b = h.register('b');
+    h.call('POST', '/throw', a.token, { body: '会丢字的一封。' });
+    const caught = catchOf(h.call('POST', '/catch', b.token));
+    if (caught.empty) throw new Error('应该捞到');
+
+    // 模拟「正文已经没了」（比如重启过）
+    h.db.letters[0]!.body = '';
+    h.call('POST', '/dismiss', b.token, { letterId: caught.letterId });
+
+    expect(h.db.letters[0]!.state).toBe('archived');
+    expect(h.db.letters[0]!.archivedReason).toBe('empty');
+  });
+
+  it('/quota：告诉我哪封信被人拿在手上、以及哪些信已经没了', () => {
+    const h = setup();
+    const a = h.register('a');
+    const b = h.register('b');
+    h.call('POST', '/throw', a.token, { body: '有人捡到它了吗。' });
+    const caught = catchOf(h.call('POST', '/catch', b.token));
+    if (caught.empty) throw new Error('应该捞到');
+
+    // 作者视角：我的信正被别人拿在手上；还没有信死掉
+    const qa = h.call('GET', '/quota', a.token).body as {
+      heldByOthers?: string[];
+      deadLetters?: { id: string; why: string }[];
+    };
+    expect(qa.heldByOthers).toEqual([caught.letterId]);
+    expect(qa.deadLetters).toEqual([]);
+
+    // 拿信的人视角：这封信还活着，不算死
+    const qb = h.call('GET', '/quota', b.token).body as {
+      heldByOthers?: string[];
+      deadLetters?: { id: string; why: string }[];
+    };
+    expect(qb.deadLetters).toEqual([]);
+    expect(qb.heldByOthers).toEqual([]);
   });
 });
 
 describe('服务端 · 配额', () => {
-  it('默认公式：新用户 2 封可寄，池子 1 封时 2 次可捞', () => {
+  it('默认公式：新客户端 2 封可寄，池子 1 封时 2 次可捞', () => {
     const h = setup({ rules: DEFAULT_RULES });
     const a = h.register('a');
     const b = h.register('b');
