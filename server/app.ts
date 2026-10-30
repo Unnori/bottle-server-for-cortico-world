@@ -184,8 +184,9 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   const newToken = options.newToken ?? (() => randomBytes(24).toString('base64url'));
   const newId = options.newId ?? ((prefix: string) => `${prefix}_${randomBytes(8).toString('hex')}`);
   const newPseudonym = options.newPseudonym ?? (() => makePseudonym(random));
-  const ipLimit = options.ipLimit ?? 3;
-  const ipWindowMs = options.ipWindowMs ?? HOUR;
+  // 限流参数（每 IP 几个号 / 窗口多长）现在是热载的，见 noteRegistration()。
+  // 不再写成常量：这个数以前写死 3，配合「反代后所有请求都来自 127.0.0.1」，
+  // 等于把全服新用户挡在每小时 3 个——调它不该再付一次重启。
   const seeds = options.seeds;
   const seedsPerUserMax = options.seedsPerUserMax ?? envInt('BOTTLE_SEEDS_PER_USER_MAX', 2);
   const seedChannel = options.seedChannel ?? 'catch';
@@ -217,9 +218,21 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   /** 只活在内存里：重启即清，和正文同一条叙事。 */
   const registrations = new Map<string, number[]>();
 
+  /** 当前生效的注册限流（热载）。 */
+  function ipLimitNow(): { limit: number; windowMin: number } {
+    const t = currentTuning();
+    return {
+      limit: options.ipLimit ?? t.ipLimit,
+      windowMin: options.ipWindowMs ? Math.round(options.ipWindowMs / 60_000) : t.ipWindowMin,
+    };
+  }
+
   function noteRegistration(ip: string, at: number): boolean {
-    const recent = (registrations.get(ip) ?? []).filter((ts) => at - ts < ipWindowMs);
-    if (recent.length >= ipLimit) {
+    // 每次读热载参数：改 tuning.json 5 秒后生效，不用重启
+    const { limit, windowMin } = ipLimitNow();
+    const windowMs = windowMin * 60_000;
+    const recent = (registrations.get(ip) ?? []).filter((ts) => at - ts < windowMs);
+    if (recent.length >= limit) {
       registrations.set(ip, recent);
       return false;
     }
@@ -312,7 +325,12 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     }
 
     if (!noteRegistration(req.ip, now())) {
-      return fail(429, 'rate_limited', `同一个地址每小时最多新开 ${ipLimit} 个号。`);
+      const cap = ipLimitNow();
+      return fail(
+        429,
+        'rate_limited',
+        `同一个地址 ${cap.windowMin} 分钟内最多新开 ${cap.limit} 个号。`,
+      );
     }
 
     const token = newToken();

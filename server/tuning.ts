@@ -48,6 +48,17 @@ export interface Tuning {
    * 这样以后想调它不用再重启（重启就是海啸，代价太大）。
    */
   maxThrows: number;
+  /**
+   * 同一个 IP 在 `ipWindowMin` 分钟内最多能开几个号。
+   *
+   * 注意：这里的「IP」是**真实客户端 IP**（服务端会从 `X-Forwarded-For` 取）。
+   * 早先版本读的是 `socket.remoteAddress`，在反代后面那永远是 127.0.0.1，
+   * 于是这个限流变成了全服共用——群里一次发几十个人，第 4 个起全部被挡，
+   * 而且客户端把它显示成「连不上海边」，看起来像网络故障。
+   */
+  ipLimit: number;
+  /** 限流窗口，分钟。 */
+  ipWindowMin: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -61,6 +72,8 @@ export const DEFAULT_TUNING: Tuning = {
   poolDivisor: 5,
   replyCap: 3,
   maxThrows: 8,
+  ipLimit: 5,
+  ipWindowMin: 60,
 };
 
 export interface TuningReader {
@@ -119,6 +132,12 @@ function readOnce(file: string | null, env: NodeJS.ProcessEnv): Tuning {
     poolDivisor: pickInt(raw.poolDivisor ?? env.BOTTLE_POOL_DIVISOR, DEFAULT_TUNING.poolDivisor, 1),
     replyCap: pickInt(raw.replyCap ?? env.BOTTLE_REPLY_CAP, DEFAULT_TUNING.replyCap, 0),
     maxThrows: pickInt(raw.maxThrows ?? env.BOTTLE_MAX_THROWS, DEFAULT_TUNING.maxThrows, 1),
+    ipLimit: pickInt(raw.ipLimit ?? env.BOTTLE_IP_LIMIT, DEFAULT_TUNING.ipLimit, 1),
+    ipWindowMin: pickInt(
+      raw.ipWindowMin ?? env.BOTTLE_IP_WINDOW_MIN,
+      DEFAULT_TUNING.ipWindowMin,
+      1,
+    ),
   };
 }
 

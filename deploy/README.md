@@ -87,12 +87,32 @@ curl -s http://127.0.0.1:8787/health | jq '.seeds | {count, generation, loadedAt
 
 ```caddy
 bottle.example.com {
-    reverse_proxy 127.0.0.1:8787
+    reverse_proxy 127.0.0.1:8787 {
+        # 这一行不是可选项。见下面的警告。
+        header_up X-Real-IP {remote_host}
+    }
     log {
         output file /var/log/caddy/bottle.log
     }
 }
 ```
+
+> ## ⚠️ 反代 + 按 IP 限流 = 一个必须知道的坑
+>
+> 服务端在反代后面时，`socket.remoteAddress` **永远是 `127.0.0.1`**。
+> 如果限流按它分组，`ipLimit` 就会从「每个 IP 每小时几个号」变成
+> **「全服所有人加起来每小时几个号」**——群里一次发几十个人，超出的全部被挡，
+> 而且客户端会把它显示成一个网络错误，看起来像服务器挂了。
+>
+> 所以服务端读的是反代带来的 `X-Real-IP` / `X-Forwarded-For`（见 `server/main.ts`）。
+> 然后反代必须**真的把它们设对**：
+>
+> - `header_up X-Real-IP {remote_host}` 是**覆盖**写，客户端伪造的会被丢掉
+> - Caddy 默认也会带 `X-Forwarded-For`，并且同样会丢弃客户端伪造的那一段
+>
+> （这两条在 Caddy v2.11.7 上实测过：故意发伪造头，上游收到的仍然只有真实来源。）
+>
+> **不经过反代、直接对外监听时**，`socket.remoteAddress` 就是真实 IP，无需这两个头。
 
 `HOST=0.0.0.0` 只在有反代、或需要两台机器直连时用；本机验证留 `127.0.0.1`（默认）。
 

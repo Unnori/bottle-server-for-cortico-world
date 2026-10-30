@@ -62,6 +62,8 @@ function rig(opts: { seedChannel?: 'mail' | 'catch'; tuning?: Partial<Tuning>; s
     poolDivisor: 5,
     replyCap: 3,
     maxThrows: 8,
+    ipLimit: 5,
+    ipWindowMin: 60,
     ...opts.tuning,
   };
   const reader: TuningReader = { current: () => tuning };
