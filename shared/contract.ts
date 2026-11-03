@@ -111,11 +111,24 @@ export type CatchRes =
       letterId: string;
       from: string;
       windowUntil: string;
+      caughtAt?: string;
       quota: Quota;
       /** 池子没有真人信时补位的种子瓶；来源固定是「海边邮局」。 */
       seed?: boolean;
     }
-  | { empty: true; reason: CatchEmptyReason; quota: Quota };
+  | {
+      empty: true;
+      reason: CatchEmptyReason;
+      quota: Quota;
+      /**
+       * 手上已经有一封了，顺便把「是哪一封」告诉客户端。
+       *
+       * 没有这个字段时，客户端一旦没存下那封信（响应丢失、本机写盘失败），
+       * 就永远不知道该放哪一封，而放信又必须提供 letterId —— 一次网络抖动
+       * 会变成永久卡死。**只给元信息，不含正文。**
+       */
+      held?: { letterId: string; from: string; windowUntil: string; caughtAt?: string };
+    };
 
 /**
  * 系统邮件通道（海边邮局）：**独立于捞瓶子**，不占捞取额度。

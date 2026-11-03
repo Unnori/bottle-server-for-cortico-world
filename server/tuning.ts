@@ -59,6 +59,18 @@ export interface Tuning {
   ipLimit: number;
   /** 限流窗口，分钟。 */
   ipWindowMin: number;
+
+  /**
+   * 一封被捞起来的信，在手上最多待几小时；到点自动回海面。
+   *
+   * 它直接决定「海面上有多少信」：信被捞走就不在海上，要等回信（永久消失）
+   * 或超时（回海）。窗口越长，卡在手上的越多、海面越薄。实测曾有 91 封
+   * 同时在 91 个人手上，而海面只剩 17 封。
+   *
+   * 热载：想收紧就调小，不用重启。只影响**新捞到的**信——
+   * 已捞走的窗口早已写死在数据里，改这个数不追溯。
+   */
+  replyWindowHours: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -74,6 +86,7 @@ export const DEFAULT_TUNING: Tuning = {
   maxThrows: 8,
   ipLimit: 5,
   ipWindowMin: 60,
+  replyWindowHours: 72,
 };
 
 export interface TuningReader {
@@ -136,6 +149,12 @@ function readOnce(file: string | null, env: NodeJS.ProcessEnv): Tuning {
     ipWindowMin: pickInt(
       raw.ipWindowMin ?? env.BOTTLE_IP_WINDOW_MIN,
       DEFAULT_TUNING.ipWindowMin,
+      1,
+    ),
+    // 至少 1 小时：写 0 会让刚捞到的信立刻回海，等于捞了个空
+    replyWindowHours: pickInt(
+      raw.replyWindowHours ?? env.BOTTLE_REPLY_WINDOW_HOURS,
+      DEFAULT_TUNING.replyWindowHours,
       1,
     ),
   };

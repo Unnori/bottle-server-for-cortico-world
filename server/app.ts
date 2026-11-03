@@ -259,7 +259,11 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   }
 
   function quotaFor(bot: BotRow): Quota {
-    return computeQuota(bot, poolFor(bot).length, rules);
+    // 顺手带上回信窗口：客户端要用它算倒计时，也要在兜底路径里自己算窗口。
+    return {
+      ...computeQuota(bot, poolFor(bot).length, rules),
+      reply_window_hours: currentTuning().replyWindowHours,
+    };
   }
 
   /** 让一封捞起来的信回海。扔回海里算一次；72 小时超时不算。 */
@@ -391,7 +395,22 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       (letter) => letter.state === 'caught' && letter.catcherHash === bot.clientHash,
     );
     if (held) {
-      const res: CatchRes = { empty: true, reason: 'holding', quota };
+      // 把「手上是哪一封」一并告诉客户端。
+      //
+      // 以前这里只回 reason: 'holding'，不给任何标识。于是客户端一旦没存下
+      // 那封信（响应丢失、本机写盘失败），就再也无法知道该放哪一封，
+      // 而放信又必须提供 letterId —— 一次网络抖动变成永久卡死。
+      const res: CatchRes = {
+        empty: true,
+        reason: 'holding',
+        quota,
+        held: {
+          letterId: held.id,
+          from: pseudonymOf(held.authorHash),
+          windowUntil: new Date(held.replyWindowUntil!).toISOString(),
+          caughtAt: new Date(held.caughtAt!).toISOString(),
+        },
+      };
       return ok(res);
     }
     if (quota.catches_left <= 0) {
@@ -598,15 +617,41 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     resetDaily(bot, dayIn(timeZone, at));
     if (sweep(at)) db.save();
 
-    const letterId = asObject(req.body)?.letterId;
-    const seed = typeof letterId === 'string' ? seeds?.get(letterId) : undefined;
+    const rawId = asObject(req.body)?.letterId;
+    const letterId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : '';
+
+    // ── 不带 letterId = 「把我手上那封放掉」──
+    //
+    // 这是给**死锁**准备的兜底出口。死锁是这样形成的：
+    //   /catch 已经在服务端把信标记成 caught，但响应在回程丢了（断网、超时、进程被杀），
+    //   客户端没有存下 letterId，于是它既不知道该放哪一封，也捞不到新的——
+    //   而正常放信又必须提供 letterId。两边各持一半信息，谁都解不开。
+    //
+    // 所以这里允许只凭身份解除占用：服务端自己找「当前记在这个人名下」的那封。
+    // 不传 id 时**一律不计入「扔回海里」的次数**——这不是玩家选择抛弃，
+    // 是一次没送达的投递，不该让瓶子因为网络问题而裂开。
+    if (!letterId) {
+      const orphan = db.letters.find(
+        (row) => row.state === 'caught' && row.catcherHash === bot.clientHash,
+      );
+      if (!orphan) {
+        const res: DismissRes = { ok: true, quota: quotaFor(bot), throws: 0, sank: false, counted: false };
+        return ok(res);
+      }
+      toSea(orphan);
+      db.save();
+      const res: DismissRes = { ok: true, quota: quotaFor(bot), throws: orphan.throws, sank: false, counted: false };
+      return ok(res);
+    }
+
+    const seed = seeds?.get(letterId);
     if (seed) {
       // 种子是文件里的信，不会裂也不会沉；「收好」只是本地把手里的那封放下
       if (!db.hasSeedUse(seed.id, bot.clientHash)) return fail(404, 'not_found', '你还没捞到这一封。');
       const res: DismissRes = { ok: true, quota: quotaFor(bot), throws: 0, sank: false, seed: true };
       return ok(res);
     }
-    const letter = typeof letterId === 'string' ? db.letterById(letterId) : undefined;
+    const letter = db.letterById(letterId);
     if (!letter || letter.state !== 'caught' || letter.catcherHash !== bot.clientHash) {
       return fail(404, 'not_found', '没有这一封。');
     }
