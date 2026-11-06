@@ -95,7 +95,13 @@ export interface PublicStats {
     withEcho: string;
     oldestAtSeaDays: number;
   };
-  waves: { count: number; lastDaysAgo: number | null; shattered: number };
+  waves: {
+    count: number;
+    lastDaysAgo: number | null;
+    /** 最近一次海啸的精确时刻（ISO），给大屏做「相对时间」用。 */
+    lastAt: string | null;
+    shattered: number;
+  };
 }
 
 export interface CollectOptions {
@@ -223,6 +229,8 @@ export function applyBlinding(real: RealStats, ledger: Ledger, at: number): Publ
         real.tsunamiLastAt === null
           ? null
           : Math.max(0, Math.floor((at - real.tsunamiLastAt) / DAY)),
+      /** 精确时刻（ISO）。大屏要显示「10 分钟前」而不是「0 天前」，只靠天粒度做不到。 */
+      lastAt: real.tsunamiLastAt === null ? null : new Date(real.tsunamiLastAt).toISOString(),
       shattered: real.tsunamiShatteredTotal,
     },
   };

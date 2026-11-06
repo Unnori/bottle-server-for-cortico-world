@@ -1,11 +1,18 @@
-import { BODY_MAX } from './contract.ts';
+import { BODY_MAX, NOTE_BODY_MAX, TITLE_MAX } from './contract.ts';
 
 /**
- * 按码点数字数。`'𠮷'.length` 是 2，但主人看到的是一个字。
+ * 按码点数字数。`'𠮷'.length` 是 2，但人类看到的是一个字。
  * 中文常见字都在 BMP 里，这个差别只在生僻字和 emoji 上，仍然按看到的算。
  */
 export function countChars(text: string): number {
   return [...text].length;
+}
+
+/** 标题必须是非空单行文本；正文仍由 checkBody 独立检查。 */
+export function checkTitle(raw: unknown): { ok: boolean; title: string } {
+  if (typeof raw !== 'string') return { ok: false, title: '' };
+  const title = raw.trim();
+  return { ok: title.length > 0 && countChars(title) <= TITLE_MAX && !/[\r\n\u2028\u2029]/u.test(title), title };
 }
 
 export interface BodyCheck {
@@ -26,11 +33,18 @@ export function checkBody(raw: unknown): BodyCheck {
   return { ok: true, body, chars };
 }
 
+/** 小纸条使用同样的码点/空白规则，正文最多 40 字；不能拿信件的 120 字上限代替。 */
+export function checkNote(raw: unknown): BodyCheck {
+  const result = checkBody(raw);
+  if (!result.ok) return result;
+  return result.chars > NOTE_BODY_MAX ? { ...result, ok: false, reason: 'too_long' } : result;
+}
+
 /** 化名的形状：两个词加 #四位数。只用来判断「能不能直接念出来」。 */
 const PSEUDONYM = /^[\p{Script=Han}A-Za-z][\p{Script=Han}A-Za-z·]{1,11}#\d{4}$/u;
 
 /**
- * 海边邮局的固定署名（§13.2）。它**不是**用户化名，所以不能过 `safePseudonym` 那套
+ * 海边邮局的固定署名（§13.2）。它**不是**人类化名，所以不能过 `safePseudonym` 那套
  * 「两个词 + #四位数」的形状检查——否则会被换成「一位陌生人」，种子信就伪装成了某个人。
  */
 export const SEED_FROM = '海边邮局';
@@ -43,7 +57,7 @@ export function isPseudonym(value: string): boolean {
  * 把不能念出来的名字换掉，回执与页面上都不显示原始值。
  *
  * 唯一的例外是海边邮局：那是我们自己写死的来源名，本来就要如实显示出来
- * （§13.1「来源固定标注为海边邮局，不伪装成任何一个用户」）。
+ * （§13.1「来源固定标注为海边邮局，不伪装成任何一个人」）。
  */
 export function safePseudonym(value: string | null | undefined): string {
   if (typeof value !== 'string') return '一位陌生人';

@@ -11,10 +11,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, watch, type FSWatcher
 import { join } from 'node:path';
 import { SEED_FROM } from '../shared/text.ts';
 
-/** 种子信是作者手写的，可以比桌宠的 120 字长，但也不能是一篇文章。 */
+/** 种子信是作者手写的，可以比 Coo 的 120 字长，但也不能是一篇文章。 */
 export const SEED_BODY_MAX = 400;
 /**
- * 固定的来源名。种子绝不伪装成某个用户。
+ * 固定的来源名。种子绝不伪装成某个人类。
  * 定义在 `shared/text.ts`，因为页面与卡片也要认它；这里转出去，免得两处各写一份。
  */
 export { SEED_FROM };

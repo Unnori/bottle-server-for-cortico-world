@@ -1,6 +1,6 @@
 {
   "name": "bottle-server-for-cortico-world",
-  "version": "0.1.2",
+  "version": "0.8.0",
   "type": "module",
   "description": "漂流瓶的转发服务端：正文只在内存，磁盘上不存任何明文。",
   "keywords": [

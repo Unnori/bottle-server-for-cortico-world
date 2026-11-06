@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { createApi, sha256, type Api } from '../server/app.ts';
 import { Db } from '../server/db.ts';
 import { SeedStore } from '../server/seeds.ts';
-import type { Tuning, TuningReader } from '../server/tuning.ts';
+import { DEFAULT_TUNING, type Tuning, type TuningReader } from '../server/tuning.ts';
 import { SEED_FROM } from '../shared/text.ts';
 import type { CatchRes, LetterRes, MailTakeRes, Quota } from '../shared/contract.ts';
 
@@ -52,6 +52,12 @@ function rig(opts: { seedChannel?: 'mail' | 'catch'; tuning?: Partial<Tuning>; s
   seeds.start();
 
   const tuning: Tuning = {
+      ...DEFAULT_TUNING,
+      // 这批测试验证的是「每天能领几封」，不看时刻表：
+      // 把槽位拉满一天 + 概率 100%，等价于老行为（额度一到就能领）。
+      seedSlotsMin: 24,
+      seedSlotsMax: 24,
+      seedDailyChance: 1,
     seedsPerDay: 2,
     seedsGlobalOnce: true,
     seedsEnabled: true,
@@ -69,7 +75,10 @@ function rig(opts: { seedChannel?: 'mail' | 'catch'; tuning?: Partial<Tuning>; s
   const reader: TuningReader = { current: () => tuning };
 
   const db = Db.open(null);
-  const clock = { t: Date.parse('2026-10-27T10:00:00+08:00') };
+  // 这个文件的量纲是 **每日上限和两层去重**，不是"几点到"。放在 23:59:59，
+// 当天所有时刻必然都已经到点，"当天最多能领 N 封"才测得出来。
+// 要看"还没到点"的行为，用 seedSlots.test.ts。
+const clock = { t: Date.parse('2026-10-27T23:59:59+08:00') };
   let tokens = 0;
   const api = createApi(db, {
     seeds,

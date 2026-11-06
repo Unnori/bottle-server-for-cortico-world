@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 独立进程的漂流瓶服务端。
  *
  *   pnpm server
@@ -13,11 +13,12 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { agoText } from '../shared/ago.ts';
 import { seaStateAt } from '../shared/tide.ts';
 import { createApi, type Api } from './app.ts';
 import { Db } from './db.ts';
 import { SeedStore } from './seeds.ts';
-import { makeTuningReader, tuningPathFor } from './tuning.ts';
+import { makeTuningReader, tuningPathFor, type Tuning } from './tuning.ts';
 
 const MAX_BODY = 16 * 1024;
 
@@ -66,6 +67,15 @@ function send(res: ServerResponse, status: number, body: unknown): void {
  * 它和 API 完全隔离——不读数据库、不认 token、不回显任何请求参数。
  * 打开它的人不该能从这一页推出「这台机器上有什么」。
  */
+/**
+ * 落地页要读的热载参数。
+ *
+ * 为什么单独建一个 reader：createApi 里那个是内联传进去的、外面拿不到。
+ * 同一个文件建两个 reader 是安全的——它们各自缓存、各自按 mtime 重读，
+ * 最终读到的都是磁盘上那一版。
+ */
+/** 惰性初始化：dataFile 在 main() 里才算出来，模块加载时还没有路径可用。用 null 建 reader 会退化成永远读默认值，热载就静默失效了。 */
+
 let landingCache: string | null = null;
 
 function landingHtml(): string {
@@ -128,28 +138,71 @@ function sendStatsJson(res: ServerResponse, headOnly = false): void {
  * 服务端在发页之前把数字**填进 HTML**，而不是让浏览器去 fetch：
  * 这样这一页仍然是纯静态文字，CSP 可以继续是 `default-src 'none'`，一行 JS 都不用。
  */
-function renderSeaBlock(db: Db, at: number): string {
-  const sea = seaStateAt(at);
-  const t = db.tsunamiSummary();
-  const tide = sea.tide.state === '平' ? '潮水很稳' : `${sea.tide.state}潮`;
-  const waves =
-    t.count === 0
-      ? '这片海还没有起过浪。'
-      : `这片海经历过 ${t.count} 次浪，最近一次在 ${Math.max(
-          0,
-          Math.floor((at - (t.lastAt ?? at)) / 86_400_000),
-        )} 天前，一共拍碎了 ${t.totalLost} 个瓶子。`;
-  return (
-    '<div class="surprise"><b>栖潮海 · 第 ' +
-    `${sea.day} 天</b><br>` +
-    `此刻${tide}，潮位 ${sea.tide.level}；${sea.wind.dir}风 ${sea.wind.level} 级；` +
-    `${sea.moon.name}；能见度${sea.visibility}；水温 ${sea.waterTempC}℃。<br>${waves}</div>`
-  );
-}
+  /**
+   * HTML 转义。活动文本来自配置文件，会被插进公网页，必须转义。
+   *
+   * 落地页的 CSP 是 `default-src 'none'`，脚本进不来；
+   * 但一个没转义的 `<` 就足以把页面结构弄坏，所以这里不省。
+   */
+  function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (ch) => {
+      switch (ch) {
+        case '&': return '&amp;';
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '"': return '&quot;';
+        default: return '&#39;';
+      }
+    });
+  }
 
-/** 把海况填进落地页模板。模板只读一次，填充是纯字符串替换。 */
-function landingPage(db: Db, at: number): string {
-  return landingHtml().replace('<!--SEA-->', renderSeaBlock(db, at));
+  /**
+   * 活动位的 HTML。**空值返回空串**（页面上一点痕迹都没有）。
+   *
+   * 链接走白名单：只允许 http/https，且不能带账号密码。
+   * 不合格就整块不渲染——宁可少一个入口，也不要在公网页上放坏链接。
+   */
+  function renderCampaign(link: string, text: string): string {
+    if (!text) return '';
+    let href: string | null = null;
+    if (link) {
+      try {
+        const url = new URL(link);
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
+          href = url.href;
+        }
+      } catch {
+        href = null;
+      }
+    }
+    const label = escapeHtml(text);
+    if (!href) {
+      // 有文案没链接：只显示那句话，不给一个点了没反应的东西
+      return `<div class="campaign">${label}</div>`;
+    }
+    return `<div class="campaign"><a href="${escapeHtml(href)}" rel="noopener noreferrer">${label}</a></div>`;
+  }
+
+  function renderSeaBlock(db: Db, at: number, tuning: Tuning): string {
+    const sea = seaStateAt(at);
+    const t = db.tsunamiSummary();
+    const tide = sea.tide.state === '平' ? '潮水很稳' : `${sea.tide.state}潮`;
+    const waves =
+      t.count === 0
+        ? '这片海还没有起过浪。'
+        : `这片海经历过 ${t.count} 次浪，最近一次是${agoText(at - (t.lastAt ?? at))}，一共拍碎了 ${t.totalLost} 个瓶子。`;
+    // 活动位：每次渲染都重读 tuning，所以改配置 5 秒生效，不用重启。
+    const campaign = renderCampaign(tuning.campaignLink, tuning.campaignText);
+    return (
+      '<div class="surprise"><b>栖潮海 · 第 ' +
+      `${sea.day} 天</b><br>` +
+      `此刻${tide}，潮位 ${sea.tide.level}；${sea.wind.dir}风 ${sea.wind.level} 级；` +
+      `${sea.moon.name}；能见度${sea.visibility}；水温 ${sea.waterTempC}℃。<br>${waves}</div>` +
+      campaign
+    );
+  }
+  function landingPage(db: Db, at: number, tuning: Tuning): string {
+  return landingHtml().replace('<!--SEA-->', renderSeaBlock(db, at, tuning));
 }
 
 export interface BottleServerOptions {
@@ -204,13 +257,16 @@ export function createBottleServer(opts: BottleServerOptions): BottleServer {
     : Db.open(null);
   const seeds = new SeedStore({ dir: opts.seedsDir, log: (line) => opts.log?.(line) });
   seeds.start();
+    // 热载 reader 提成局部变量：createApi 和落地页都要用它。
+    // 两边必须读同一份文件，否则会出现「额度按新配置、活动位按旧配置」的割裂。
+    const tuning = makeTuningReader(tuningPathFor(opts.dataFile));
 
   const api = createApi(db, {
     seeds,
     // 系统邮件走独立通道：不占捞取额度，也不再由 `/catch` 兜底
     seedChannel: 'mail',
     // 每天几封、全服去重开不开都在这个热载文件里：调参不用重启，因而不用海啸
-    tuning: makeTuningReader(tuningPathFor(opts.dataFile)),
+      tuning,
   });
 
   const server = createServer((req, res) => {
@@ -261,7 +317,7 @@ export function createBottleServer(opts: BottleServerOptions): BottleServer {
         // 落到 401 分支会让运维误判「服务挂了」。
         if ((method === 'GET' || method === 'HEAD') && (path === '/' || path === '/index.html')) {
           // 把「此刻的海」填进去：页面因此每天都不一样，但依然没有一行 JS
-          sendHtml(res, 200, landingPage(db, Date.now()), method === 'HEAD');
+          sendHtml(res, 200, landingPage(db, Date.now(), tuning.current()), method === 'HEAD');
           return;
         }
         // 大屏的数据源。和落地页一样是「纯静态一跳」：不认 token、不碰数据库。
@@ -285,6 +341,8 @@ export function createBottleServer(opts: BottleServerOptions): BottleServer {
     })();
   });
 
+  const noteSweep = setInterval(() => { if (db.pruneNotes(Date.now())) db.save(); }, 60_000);
+  noteSweep.unref(); server.once('close', () => clearInterval(noteSweep));
   return {
     api,
     db,
