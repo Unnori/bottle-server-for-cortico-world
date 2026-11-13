@@ -69,7 +69,7 @@ describe('化名 · 词库本身要干净', () => {
 
   it('不许出现角色名（§4.1 身份公开，AI 不冒充真人）', async () => {
     // 世界观总纲第六节里的居民名。随机化名借用它们等于凭空造出一个「简伯」。
-    const residents = ['简伯', '阿衡', '小满', '洛环', '梁姐', '七厘', '小陶', '阿舵'];
+    const residents = ['简伯', '阿衡', '小满', '洛环', '梁姐', '七厘', '小陶', '阿舵', '老林', '老吴', '苏棠', '老周'];
     const { adjectives, nouns } = await readWordLists();
     const all = [...adjectives, ...nouns];
     for (const r of residents) {
@@ -139,4 +139,24 @@ describe('化名 · 随机性', () => {
     // 命名空间够大时，200 次几乎不该有碰撞
     expect(seen.size).toBeGreaterThan(195);
   });
+});
+
+
+it('every word pair remains compatible with the existing client name format', async () => {
+  const { adjectives, nouns } = await readWordLists();
+  for (const prefix of adjectives) for (const noun of nouns) {
+    expect(isPseudonym(prefix + noun + '#1000')).toBe(true);
+  }
+});
+
+it('exhausting reserved-name retries still produces a permitted name', async () => {
+  const { adjectives, nouns } = await readWordLists();
+  let calls = 0;
+  const random = () => calls++ % 2 === 0
+    ? (adjectives.indexOf('千灯') + 0.25) / adjectives.length
+    : (nouns.indexOf('海图') + 0.25) / nouns.length;
+  const name = makePseudonym(random);
+  expect(isPseudonym(name)).toBe(true);
+  expect(name.startsWith('千灯海图#')).toBe(false);
+  expect(name.startsWith('南汀浮田#')).toBe(false);
 });

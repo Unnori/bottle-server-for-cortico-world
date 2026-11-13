@@ -1,0 +1,49 @@
+name: Release server
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: server-release
+  cancel-in-progress: false
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable corepack
+        run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$version"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Tests
+        run: pnpm test
+      - name: Build and inspect deployment archive
+        run: node scripts/package-release.mjs
+      - name: Keep verified deployment archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-server-${{ github.ref_name }}
+          path: release/*
+          if-no-files-found: error
+      - name: Attach deployment archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber

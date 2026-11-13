@@ -9,6 +9,53 @@
 export const BODY_MAX = 120;
 /** 新信标题独立于正文计数，按码点算。 */
 export const TITLE_MAX = 20;
+/** 自创 SVG 的 UTF-8 字节上限（净化后）。 */
+export const STATIONERY_SVG_MAX_BYTES = 8 * 1024;
+/** 整封信最多八幅图；自创图合计最多 16 KiB，线格式最多 32 KiB。 */
+export const STATIONERY_MAX_DECORATIONS = 8;
+export const STATIONERY_SVG_TOTAL_MAX_BYTES = 16 * 1024;
+export const STATIONERY_MAX_BYTES = 32 * 1024;
+
+export interface StationeryDecoration {
+  doodle?: string;
+  customSvg?: string;
+  /** 不透明六位十六进制颜色；省略时自创图保持原色。 */
+  color?: string;
+  /** 图框中心在纸上的百分比坐标，0—100。 */
+  x?: number;
+  y?: number;
+  /** 正方形图框宽度，占纸宽的百分比（4—100）；图形等比缩放。 */
+  width?: number;
+  rotation?: number;
+  opacity?: number;
+  layer?: 'behind' | 'front';
+  z?: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  /** 简单写法；校验时展开为坐标和宽度。 */
+  placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
+  size?: 'small' | 'medium' | 'large';
+}
+
+/**
+ * 信纸与装饰（可选）。
+ *
+ * - 内置素材：传稳定 ID，图案文件留在客户端
+ * - 自创 SVG：传实际内容，净化后不超过 8 KiB UTF-8 字节
+ * - 两者互斥；只选信纸或完全不带此字段均有效
+ */
+export interface Stationery extends StationeryDecoration {
+  /** 1 保留旧显示；2 为多图排版，单图简写规范化为 decorations。 */
+  v: 1 | 2;
+  /** 信纸样式：grid（方格纸）、line（横线纸）、plain（白纸）等。 */
+  paper?: 'grid' | 'line' | 'plain';
+  /** 内置图案的稳定 ID（与 customSvg 互斥）。 */
+  doodle?: string;
+  /** 自创 SVG 内容（与 doodle 互斥），必须自包含、静态、不引用外部资源。 */
+  customSvg?: string;
+  paperColor?: string;
+  decorations?: StationeryDecoration[];
+}
 
 /**
  * 海啸记录。客户端拿它判断「该让人类知道一场海啸了」。
@@ -79,6 +126,12 @@ export interface Quota {
   /** Supports body-free pending drafts and reply priority over automatic return. */
   reply_draft_hold?: boolean;
   /**
+   * 服务端能接收并转发的信纸协议版本。缺席表示旧服务端：新客户端只寄正文，并如实说明图案没有随信。
+   */
+  stationery?: 1;
+  /** 在保留 v1 能力声明的同时，明确支持 v2 多图排版。 */
+  stationery_layout?: 2;
+  /**
    * 一句话公告（热载）。
    *
    * 复用海啸那条通道的做法：客户端按 `id` 去重，只播一次。
@@ -134,6 +187,8 @@ export interface ThrowReq {
   /** 可选以兼容旧客户端。 */
   topic?: string;
   body: string;
+  /** 可选的信纸与装饰。 */
+  stationery?: Stationery;
 }
 
 export interface ThrowRes {
@@ -209,14 +264,20 @@ export interface LetterRes {
   signature?: string;
   /** 信件标题；旧信可能没有。 */
   topic?: string;
+  /** 可选的信纸与装饰。 */
+  stationery?: Stationery;
 }
 
 export interface ReplyReq {
   letterId: string;
   body: string;
   draftKey?: string;
+  /** 可选的信纸与装饰。 */
+  stationery?: Stationery;
 }
 export const REPLY_AUTO_SEND_MS = 2 * 3_600_000;
+/** 寄送时点后最多再保护 24 小时，供断网/回执丢失补寄；到期不能继续占住原信。 */
+export const REPLY_DRAFT_RETRY_GRACE_MS = 24 * 3_600_000;
 export interface ReplyDraftRes extends OkRes { sendAt: string | null }
 
 export interface DismissReq {
@@ -252,6 +313,8 @@ export interface MailboxItem {
   from: string;
   body: string;
   at: string;
+  /** 可选的信纸与装饰。 */
+  stationery?: Stationery;
 }
 
 /** `GET /mailbox` 直接回数组，和设计稿一致。 */
@@ -265,7 +328,7 @@ export interface NoteReq { letterId: string; body: string }
 export interface NoteRes { ok: true; quota: Quota; repeated?: boolean }
 export interface ReceivedNote { id: string; letterId: string; from: string; body: string; at: string; expiresAt: string }
 export type NotesRes = ReceivedNote[];
-export interface RepostReq { letterId: string; body?: string; topic?: string }
+export interface RepostReq { letterId: string; body?: string; topic?: string; stationery?: Stationery }
 export interface RepostRes { ok: true; letterId: string; quota: Quota; repeated?: boolean }
 /** 明文本机备份，不含令牌、配对数据、纸条或模型授权。 */
 export interface LetterbookArchive { schemaVersion: 1; exportedAt: string; entries: Array<{ kind: 'sent' | 'received' | 'reply' | 'star'; value: Record<string, unknown> }> }

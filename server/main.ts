@@ -21,14 +21,20 @@ import { SeedStore } from './seeds.ts';
 import { makeTuningReader, tuningPathFor, type Tuning } from './tuning.ts';
 
 const MAX_BODY = 16 * 1024;
+/**
+ * 只有能带信纸的三个入口放宽：8 KiB 手账图经 JSON 转义后可能翻倍，再加正文与标题。
+ * 其余入口保持 16 KiB，不取消全站上限。
+ */
+const STATIONERY_PATHS = new Set(['/throw', '/reply', '/repost']);
+const MAX_STATIONERY_BODY = 40 * 1024;
 
-function readJson(req: IncomingMessage): Promise<unknown> {
+function readJson(req: IncomingMessage, limit = MAX_BODY): Promise<unknown> {
   return new Promise((resolvePromise, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(new Error('body too large'));
         req.destroy();
         return;
@@ -298,7 +304,7 @@ export function createBottleServer(opts: BottleServerOptions): BottleServer {
       let body: unknown;
       if (method === 'POST') {
         try {
-          body = await readJson(req);
+          body = await readJson(req, STATIONERY_PATHS.has(path) ? MAX_STATIONERY_BODY : MAX_BODY);
         } catch (error) {
           send(res, 400, {
             error: 'bad_request',

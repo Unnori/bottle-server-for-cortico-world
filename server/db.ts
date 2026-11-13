@@ -47,9 +47,13 @@ export interface BotRow {
   dismissedToday?: string[];
 }
 
+import type { Stationery } from '../shared/contract.ts';
+
 export interface LetterRow {
   /** 与正文一样只活在内存里，不写进账本。 */
   topic?: string;
+  /** 信纸与装饰，只活在内存里；`save()` 时剔除。 */
+  stationery?: Stationery;
   id: string;
   authorHash: string;
   /** 只活在内存里；`save()` 时写成空串。 */
@@ -81,6 +85,8 @@ export interface ReplyRow {
   letterId: string;
   /** 同样只活在内存里。 */
   body: string;
+  /** 回信装饰，只活在内存里；`save()` 时剔除。 */
+  stationery?: Stationery;
   createdAt: number;
 }
 
@@ -293,8 +299,8 @@ export class Db {
     const payload: DbFile = {
       version: 3,
       bots: this.bots,
-      letters: this.letters.map(({ topic: _topic, ...letter }) => ({ ...letter, body: '' })),
-      replies: this.replies.map((reply) => ({ ...reply, body: '' })),
+      letters: this.letters.map(({ topic: _topic, stationery: _stationery, ...letter }) => ({ ...letter, body: '' })),
+      replies: this.replies.map(({ stationery: _stationery, ...reply }) => ({ ...reply, body: '' })),
       seedsUsed: this.seedUses,
       // 注意：notes **不**清空 body。这是全库唯一的例外——
       // 它要等对方上线才送达，清空等于让那句告别永远消失（见 NoteRow 注释）。

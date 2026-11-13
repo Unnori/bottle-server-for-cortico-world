@@ -10,6 +10,7 @@ import {
   NOTE_BODY_MAX,
   NOTE_TTL_MS,
   REPLY_AUTO_SEND_MS,
+  REPLY_DRAFT_RETRY_GRACE_MS,
   type CatchRes,
   type DeadLetter,
   type DismissRes,
@@ -21,6 +22,7 @@ import {
   type TideOutRes,
 } from '../shared/contract.ts';
 import { checkBody, checkNote, checkTitle } from '../shared/text.ts';
+import { checkStationery } from '../shared/stationery.ts';
 import { seaStateAt } from '../shared/tide.ts';
 import { dayStartMs, seedDayPlan, slotsArrived } from '../shared/seedSlots.ts';
 import { type Db, type BotRow, type LetterRow } from './db.ts';
@@ -109,7 +111,7 @@ export function dayIn(timeZone: string, at: number): string {
  *   4. **两库不重词**：同一个词同时出现在两边会拼出「潮签潮签」这种。
  *      `tests/pseudonym.test.ts` 会守这一条。
  *
- * 数量：60 × 60 × 9000 = 3240 万种组合。
+ * 数量：149 × 177 × 9000，剔除禁用组合后为 237,339,000 种。
  */
 const ADJECTIVES = [
   // ── 第一批（0.1.0 就有，保留原样）──
@@ -125,6 +127,16 @@ const ADJECTIVES = [
   '渡口', '旧码头', '盐霜', '铁锈', '湿柴', '漏雨', '空瓶', '锚地', '夜航',
   // ── 状态（v2.0 新增：不够体面但真实的状态）──
   '补丁', '旧漆', '晚渡', '未寄', '初霜', '潮签', '长明', '值更', '背风', '换灯',
+  // 2026-11-12: everyday objects, materials and body imagery.
+  '毛绒', '蓬松', '卷尾', '长耳', '圆耳', '软爪', '蜷尾', '垂耳', '翘尾', '鳞光',
+  '羽白', '茸角', '夜光', '微蓝', '暖黄', '海青', '靛蓝', '铜绿', '银灰', '浅金',
+  '米白', '雾蓝', '赭红', '墨绿', '碎花', '格纹', '条纹', '帆布', '棉麻', '软木',
+  '黄铜', '白瓷', '搪瓷', '玻璃', '竹编', '藤编', '旧木', '松木', '暖灯', '小雪',
+  '细雨', '夜雨', '晴窗', '晨露', '海风', '南风', '北风', '向晚', '破晓', '午后',
+  '入夜', '半醒', '打盹', '懒散', '慢吞吞', '慢悠悠', '蹭暖', '避雨', '晒背', '泡水',
+  '揣兜', '卷边', '打结', '歪斜', '掉漆', '磨亮', '泛旧', '洗净', '烘暖', '未凉',
+  '有糖', '少盐', '不加葱', '半杯', '一角', '窗边', '廊下', '檐下', '街角', '船尾',
+  '舷边', '池畔', '坡顶', '水线', '树影', '灯影', '苔痕', '月白', '星屑',
 ];
 
 const NOUNS = [
@@ -139,6 +151,19 @@ const NOUNS = [
   '螺壳', '面店', '浮田', '钟声', '缆绳', '零件商', '雨衣', '手电', '罐头', '浮标',
   // ── v2.0 新增：船上、码头、市集上真有的东西 ──
   '灯油', '铜铃', '仓单', '旧信', '糖水', '缆桩', '桅灯', '鱼干', '修伞铺', '礁民',
+  // 2026-11-12: everyday objects, materials and body imagery.
+  '鹿角', '龙角', '尾鳍', '猫耳', '长尾', '鳞片', '羽毛', '绒球', '爪印', '耳罩',
+  '发卡', '毛线', '围裙', '布套', '斗篷', '雨披', '背架', '护目镜', '皮筋', '搭扣',
+  '纽扣', '银耳环', '亮片', '软胶条', '软木塞', '瓶塞', '铁盒', '饼干盒', '茶缸', '茶杯',
+  '保温杯', '豆奶', '红茶', '盐饼干', '柠檬糖', '烧饼', '包子', '炸糕', '南瓜', '西瓜',
+  '白菜叶', '薄荷糖', '虾米', '鱼露', '醋碟', '汤勺', '面碗', '饭盒', '竹篙', '栈桥',
+  '船桨', '舢板', '浮囊', '滑道', '石阶', '木凳', '长椅', '栏杆', '泊位', '缆线',
+  '灯罩', '灯笼', '灯穗', '灯泡', '小夜灯', '手电筒', '螺母', '垫圈', '扳手', '插销',
+  '扣环', '铁链', '木锤', '手锯', '刮刀', '砂纸', '刷子', '油漆桶', '抹布', '水盆',
+  '玻璃瓶', '鹅卵石', '工装兜', '帆布卷', '棉线', '针脚', '旧报纸', '纸袋', '便签', '铅笔',
+  '胶带', '橡皮', '票夹', '钥匙扣', '零钱', '小木箱', '木条', '门帘', '门框', '雨靴',
+  '钉鞋', '围巾', '脚印', '打包员', '裁缝', '木匠', '焊工', '搬运工', '巡线员', '修桥人',
+  '摆摊人', '气象员', '播报员', '收摊人', '洗瓶人', '茶摊主', '旧伞',
 ];
 
 /**
@@ -159,15 +184,16 @@ function pick<T>(list: readonly T[], random: () => number): T {
 
 export function makePseudonym(random: () => number = Math.random): string {
   const digits = () => 1000 + Math.floor(random() * 9000);
-  // 撞专名的概率是 2/3600，摇 8 次还撞上基本不可能；
-  // 真撞了就接受，不为了极端情况卡死调用方。
+  // 撞上专名时有限次重抽，耗尽后使用安全组合，避免无限循环。
   for (let attempt = 0; attempt < 8; attempt++) {
     const a = pick(ADJECTIVES, random);
     const n = pick(NOUNS, random);
     if (RESERVED_COMBOS.has(a + n)) continue;
     return `${a}${n}#${digits()}`;
   }
-  return `${pick(ADJECTIVES, random)}${pick(NOUNS, random)}#${digits()}`;
+  const safePrefix = ADJECTIVES[0]!;
+  const safeNoun = NOUNS.find(noun => !RESERVED_COMBOS.has(safePrefix + noun))!;
+  return `${safePrefix}${safeNoun}#${digits()}`;
 }
 
 const ok = (body: unknown): ApiResponse => ({ status: 200, body });
@@ -272,6 +298,8 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       ...computeQuota(bot, poolFor(bot).length, rules),
       reply_window_hours: currentTuning().replyWindowHours,
       reply_draft_hold: true,
+      stationery: 1,
+      stationery_layout: 2,
     };
   }
 
@@ -306,11 +334,24 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     letter.replyWindowUntil = null;
   }
 
-  /** 72 小时到点的信回海。惰性执行：每次请求顺手扫一遍，不另起定时器。 */
+  /** 清理失效的待寄保护，再按原回海窗口释放；寄送时点后仅保留有限重试宽限。 */
   function sweep(at: number): boolean {
     let changed = db.pruneNotes(at);
     for (const letter of db.letters) {
-      if (letter.state === 'caught' && !letter.replyDraftKey && letter.replyWindowUntil !== null && letter.replyWindowUntil <= at) {
+      const hadDraft = letter.replyDraftKey !== undefined || letter.replyDraftDueAt !== undefined;
+      const protectedDraft = letter.state === 'caught' && typeof letter.replyDraftKey === 'string' &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(letter.replyDraftKey) && typeof letter.replyDraftDueAt === 'number' &&
+        Number.isSafeInteger(letter.replyDraftDueAt) && letter.replyDraftDueAt > 0 &&
+        at < letter.replyDraftDueAt + REPLY_DRAFT_RETRY_GRACE_MS;
+      if (hadDraft && !protectedDraft) {
+        delete letter.replyDraftKey;
+        delete letter.replyDraftDueAt;
+        changed = true;
+      }
+      // 旧版共读留下的 null 窗口不能让失效草稿重新变成无限期占用。
+      const returnDue = letter.replyWindowUntil !== null && letter.replyWindowUntil <= at;
+      const missingWindow = hadDraft && (letter.replyWindowUntil === null || !Number.isFinite(letter.replyWindowUntil));
+      if (letter.state === 'caught' && !protectedDraft && (returnDue || missingWindow)) {
         toSea(letter);
         changed = true;
       }
@@ -369,7 +410,6 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   function handleThrow(req: ApiRequest, bot: BotRow): ApiResponse {
     const at = now();
     resetDaily(bot, dayIn(timeZone, at));
-    if (sweep(at)) db.save();
 
     // 退潮：只在准备重启前开，把海面清空用。它不是错误，是世界里的事。
     // 注意顺序——**在扣额度之前**拦下来：没寄出去就不该扣瓶子。
@@ -394,11 +434,17 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     const parsed = checkBody(payload?.body);
     if (!parsed.ok) return fail(400, 'bad_request', bodyProblem(parsed.reason, parsed.chars));
 
+    // 信纸与正文同属信件内容：只活在内存里，落盘与备份都剔除。不合格就整封拒收，不替人改画。
+    const decor = checkStationery(payload?.stationery);
+    if (!decor.ok) return fail(400, 'bad_request', decor.reason);
+    const stationery = decor.value;
+
     const letter: LetterRow = {
       id: newId('l'),
       authorHash: bot.clientHash,
       body: parsed.body,
       ...(heading ? { topic: heading.title } : {}),
+      ...(stationery ? { stationery } : {}),
       createdAt: at,
       state: 'floating',
       catcherHash: null,
@@ -416,7 +462,6 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   function handleCatch(req: ApiRequest, bot: BotRow): ApiResponse {
     const at = now();
     resetDaily(bot, dayIn(timeZone, at));
-    if (sweep(at)) db.save();
 
     const quota = quotaFor(bot);
     const held = db.letters.find(
@@ -590,7 +635,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     if (letter.state !== 'caught' && letter.state !== 'replied') {
       return fail(404, 'not_found', '这一封已经不在你手上了。');
     }
-    return ok({ body: letter.body, from: pseudonymOf(letter.authorHash), ...(letter.topic ? { topic: letter.topic } : {}) });
+    return ok({ body: letter.body, from: pseudonymOf(letter.authorHash), ...(letter.topic ? { topic: letter.topic } : {}), ...(letter.stationery ? { stationery: letter.stationery } : {}) });
   }
 
   /** 种子的正文在文件里，海啸淹不掉；但只有捞到过它的人能取。 */
@@ -610,7 +655,6 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   function handleReply(req: ApiRequest, bot: BotRow): ApiResponse {
     const at = now();
     resetDaily(bot, dayIn(timeZone, at));
-    if (sweep(at)) db.save();
 
     const payload = asObject(req.body);
     const letterId = typeof payload?.letterId === 'string' ? payload.letterId : '';
@@ -620,6 +664,9 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     const reserved=db.letterById(letterId),prior=db.replyFor(letterId);
     const replyId=draftKey?'r_'+sha256('reply:'+letterId+':'+draftKey).slice(0,32):'';
     if(reserved?.catcherHash===bot.clientHash&&reserved.state==='replied'&&prior&&replyId===prior.id)return ok({ok:true,quota:quotaFor(bot)});
+    // 明确失去占用时优先报失效，不能被额度错误掩盖而让客户端无限补寄。
+    if(draftKey&&(!reserved||reserved.catcherHash!==bot.clientHash||reserved.state!=='caught'&&reserved.state!=='replied'))
+      return fail(404,'not_found','这一封已经不在你手上了。');
     if (bot.repliesMade >= (rules.replyCap ?? DEFAULT_RULES.replyCap ?? 3) && !(reserved?.catcherHash===bot.clientHash&&draftKey&&reserved.replyDraftKey===draftKey)) {
       return fail(
         429,
@@ -641,8 +688,12 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     const parsed = checkBody(payload?.body);
     if (!parsed.ok) return fail(400, 'bad_request', bodyProblem(parsed.reason, parsed.chars));
 
+    const decor = checkStationery(payload?.stationery);
+    if (!decor.ok) return fail(400, 'bad_request', decor.reason);
+    const stationery = decor.value;
+
     if(letter.replyDraftKey&&letter.replyDraftKey!==draftKey)return fail(409,'conflict','已有另一份确认待寄的回信稿，请刷新信箱。');
-    const reply={ id: replyId||newId('r'), letterId: letter.id, body: parsed.body, createdAt: at };
+    const reply={ id: replyId||newId('r'), letterId: letter.id, body: parsed.body, ...(stationery ? { stationery } : {}), createdAt: at };
     const oldKey=letter.replyDraftKey,oldDue=letter.replyDraftDueAt;
     db.replies.push(reply);
     letter.state = 'replied';
@@ -655,7 +706,6 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   function handleDismiss(req: ApiRequest, bot: BotRow): ApiResponse {
     const at = now();
     resetDaily(bot, dayIn(timeZone, at));
-    if (sweep(at)) db.save();
 
     const rawId = asObject(req.body)?.letterId;
     const letterId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : '';
@@ -728,6 +778,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
         from: pseudonymOf(letter.catcherHash),
         body: reply.body,
         at: new Date(reply.createdAt).toISOString(),
+        ...(reply.stationery ? { stationery: reply.stationery } : {}),
       });
     }
     items.sort((a, b) => (a.at < b.at ? 1 : -1));
@@ -805,16 +856,21 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
     if (!body.ok) return fail(410, 'gone', '这封已经找不回来了。本机也没有完整原文。');
     const heading = payload?.topic === undefined ? null : checkTitle(payload.topic);
     if (heading && !heading.ok) return fail(400, 'bad_request', '原信标题格式不正确。');
+    // 海啸后服务端已经没有原装饰（只在内存），由作者本机信册里的那份补回；同样要过校验。
+    const decor = old.stationery ? { ok: true as const, value: old.stationery } : checkStationery(payload?.stationery);
+    if (!decor.ok) return fail(400, 'bad_request', decor.reason);
+    const stationery = decor.value;
     if (quotaFor(bot).catches_left <= 0) return fail(429, 'no_catch', '重投需要一次打捞机会。');
     const row: LetterRow = { id: newLetterId, authorHash: bot.clientHash, body: body.body,
-      ...(old.topic || heading?.title ? { topic: old.topic || heading!.title } : {}), createdAt: at, state: 'floating',
+      ...(old.topic || heading?.title ? { topic: old.topic || heading!.title } : {}),
+      ...(stationery ? { stationery } : {}), createdAt: at, state: 'floating',
       catcherHash: null, caughtAt: null, replyWindowUntil: null, deliveredCount: 0, throws: 0 };
     db.letters.push(row); bot.catchesUsed++;
     if (!db.save()) { db.letters = db.letters.filter(n => n !== row); bot.catchesUsed--; return fail(503, 'internal', '没有重投成功，也没有扣机会。'); }
     return ok({ ok: true, letterId: row.id, quota: quotaFor(bot) });
   }
   function handleReplyDraft(req:ApiRequest,bot:BotRow):ApiResponse{
-    const at=now();resetDaily(bot,dayIn(timeZone,at));if(sweep(at))db.save();
+    const at=now();resetDaily(bot,dayIn(timeZone,at));
     const payload=asObject(req.body),id=typeof payload?.letterId==='string'?payload.letterId:'',key=typeof payload?.draftKey==='string'?payload.draftKey:'';
     if(!/^[A-Za-z0-9_-]{1,128}$/.test(key))return fail(400,'bad_request','回信稿凭据不完整。');
     const letter=db.letterById(id);if(!letter||letter.catcherHash!==bot.clientHash||letter.state!=='caught')return fail(404,'not_found','这封信已经不在手里。');
@@ -824,6 +880,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
       delete letter.replyDraftKey;delete letter.replyDraftDueAt;
     }else{
       if(letter.replyDraftKey===key)return ok({ok:true,sendAt:new Date(letter.replyDraftDueAt!).toISOString(),quota:quotaFor(bot)});
+      if(letter.replyDraftKey)return fail(409,'conflict','已有另一份确认待寄的回信稿，请先处理原稿。');
       if((quotaFor(bot).replies_left??1)<=0)return fail(429,'no_reply','今天的回信额度用完了。');
       letter.replyDraftKey=key;letter.replyDraftDueAt=at+REPLY_AUTO_SEND_MS;
     }
@@ -872,7 +929,7 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
   function handleQuota(_req: ApiRequest, bot: BotRow): ApiResponse {
     const at = now();
     const changed = resetDaily(bot, dayIn(timeZone, at));
-    if (sweep(at) || changed) db.save();
+    if (changed) db.save();
 
     // 「与我有关、但已经不能用」的信：客户端据此把「还在漂」「还有 72 小时回海」改口。
     // 正常运行期间这两组永远是空的——正文都在进程内存里，只有重启后才会出现空的。
@@ -950,7 +1007,8 @@ export function createApi(db: Db, options: ApiOptions = {}): Api {
 
   return {
     handle(req: ApiRequest): ApiResponse {
-      if (db.pruneNotes(now())) db.save();
+      // 连健康探针和读信请求也可回收过期占用，不依赖原持有人再次上线。
+      if (sweep(now())) db.save();
       const path = req.path.replace(/\/+$/, '') || '/';
       // 每次请求前刷一下参数（内部有 5 秒 mtime 缓存，不会真去 stat 每个请求）
       refreshRules();

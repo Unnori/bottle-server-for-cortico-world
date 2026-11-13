@@ -6,7 +6,7 @@
 # 海啸只丢「还漂着的信」，文件损坏丢的是「你是谁」。所以备份是最后一道闸。
 #
 # 一致性：服务端写 bottle.json 用的是 tmp + rename（原子替换），
-# 所以这里 `cp` 拿到的永远是一个完整快照，不需要停服务。
+# 所以这里读取的永远是一个完整快照，不需要停服务。
 #
 # 校验：解析不了的备份等于没有备份，直接删掉并退非零，让 systemd 记一笔失败。
 set -eu
@@ -25,7 +25,23 @@ mkdir -p "$DIR"
 STAMP=$(date +%Y%m%d-%H%M)
 OUT="$DIR/bottle-$STAMP.json"
 
-cp -a "$DATA" "$OUT"
+# Never copy transient paper text into long-lived backups: ack/TTL must truly erase it.
+"$NODE" -e '
+const fs = require("node:fs");
+const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+data.notes = [];
+data.letters = (data.letters || []).map(({topic, stationery, ...row}) => ({...row, body: ""}));
+data.replies = (data.replies || []).map(({stationery, ...row}) => ({...row, body: ""}));
+const bytes = JSON.stringify(data, null, 2) + "\n";
+const out = process.argv[2], tmp = out + ".tmp-" + process.pid;
+try {
+  fs.writeFileSync(tmp, bytes, {mode: 0o600, flag: "wx"});
+  JSON.parse(fs.readFileSync(tmp, "utf8"));
+  fs.renameSync(tmp, out);
+} finally {
+  try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+' "$DATA" "$OUT"
 
 if ! "$NODE" -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$OUT" 2>/dev/null; then
   echo "备份解析失败，已删除：$OUT" >&2
